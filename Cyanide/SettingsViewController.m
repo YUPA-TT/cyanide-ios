@@ -152,8 +152,10 @@ NSString * const kSettingsLayoutDockScalePct    = @"LayoutDockScalePct";
 
 NSString * const kSettingsStatBarEnabled = @"StatBarEnabled";
 NSString * const kSettingsStatBarCelsius = @"StatBarCelsius";
-NSString * const kSettingsStatBarShowNet = @"StatBarShowNet";
+NSString * const kSettingsStatBarShowTemp = @"StatBarShowTemp";
 NSString * const kSettingsStatBarShowCPU = @"StatBarShowCPU";
+NSString * const kSettingsStatBarShowRAM = @"StatBarShowRAM";
+NSString * const kSettingsStatBarShowNet = @"StatBarShowNet";
 NSString * const kSettingsStatBarShowLabels = @"StatBarShowLabels";
 
 NSString * const kSettingsRSSIDisplayEnabled = @"RSSIDisplayEnabled";
@@ -1912,8 +1914,10 @@ static void settings_start_statbar_live_loop(void)
                         break;
                     }
                     ok = statbar_apply_in_session([d boolForKey:kSettingsStatBarCelsius],
-                                                  [d boolForKey:kSettingsStatBarShowNet],
+                                                  [d boolForKey:kSettingsStatBarShowTemp],
                                                   [d boolForKey:kSettingsStatBarShowCPU],
+                                                  [d boolForKey:kSettingsStatBarShowRAM],
+                                                  [d boolForKey:kSettingsStatBarShowNet],
                                                   [d boolForKey:kSettingsStatBarShowLabels]);
                 }
 
@@ -2011,8 +2015,10 @@ static void settings_apply_statbar_once_async(const char *reason)
                 ![d boolForKey:kSettingsStatBarEnabled] ||
                 !g_springboard_rc_ready) return;
             ok = statbar_apply_in_session([d boolForKey:kSettingsStatBarCelsius],
-                                          [d boolForKey:kSettingsStatBarShowNet],
+                                          [d boolForKey:kSettingsStatBarShowTemp],
                                           [d boolForKey:kSettingsStatBarShowCPU],
+                                          [d boolForKey:kSettingsStatBarShowRAM],
+                                          [d boolForKey:kSettingsStatBarShowNet],
                                           [d boolForKey:kSettingsStatBarShowLabels]);
         }
         // Only log lifecycle applies that change result; a clean success on
@@ -2794,8 +2800,10 @@ static BOOL settings_key_is_statbar(NSString *key)
 {
     return [key isEqualToString:kSettingsStatBarEnabled] ||
            [key isEqualToString:kSettingsStatBarCelsius] ||
-           [key isEqualToString:kSettingsStatBarShowNet] ||
+           [key isEqualToString:kSettingsStatBarShowTemp] ||
            [key isEqualToString:kSettingsStatBarShowCPU] ||
+           [key isEqualToString:kSettingsStatBarShowRAM] ||
+           [key isEqualToString:kSettingsStatBarShowNet] ||
            [key isEqualToString:kSettingsStatBarShowLabels];
 }
 
@@ -2938,8 +2946,10 @@ static void settings_schedule_live_apply_for_key(NSString *key)
                 @synchronized (settings_rc_lock()) {
                     if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
                     bool ok = statbar_apply_in_session([d boolForKey:kSettingsStatBarCelsius],
-                                                       [d boolForKey:kSettingsStatBarShowNet],
+                                                       [d boolForKey:kSettingsStatBarShowTemp],
                                                        [d boolForKey:kSettingsStatBarShowCPU],
+                                                       [d boolForKey:kSettingsStatBarShowRAM],
+                                                       [d boolForKey:kSettingsStatBarShowNet],
                                                        [d boolForKey:kSettingsStatBarShowLabels]);
                     settings_mark_tweak_applied(kSettingsStatBarEnabled,
                                                 ok && [d boolForKey:kSettingsStatBarEnabled]);
@@ -3085,8 +3095,10 @@ void settings_register_defaults(void)
 
         kSettingsStatBarEnabled: @NO,
         kSettingsStatBarCelsius: @NO,
-        kSettingsStatBarShowNet:    @NO,
+        kSettingsStatBarShowTemp:   @YES,
         kSettingsStatBarShowCPU:    @YES,
+        kSettingsStatBarShowRAM:    @YES,
+        kSettingsStatBarShowNet:    @NO,
         kSettingsStatBarShowLabels: @YES,
 
         kSettingsRSSIDisplayEnabled: @NO,
@@ -3210,9 +3222,10 @@ void settings_run_actions(void)
                          (long)[d integerForKey:kSettingsLayoutDockScalePct]);
             }
             if (runStatBar) {
-                log_user("[PLAN] StatBar target: temp=%s cpu=%s network=%s refresh=1s\n",
-                         [d boolForKey:kSettingsStatBarCelsius] ? "C" : "F",
+                log_user("[PLAN] StatBar target: temp=%s cpu=%s ram=%s network=%s refresh=1s\n",
+                         [d boolForKey:kSettingsStatBarShowTemp] ? ([d boolForKey:kSettingsStatBarCelsius] ? "C" : "F") : "hidden",
                          [d boolForKey:kSettingsStatBarShowCPU] ? "shown" : "hidden",
+                         [d boolForKey:kSettingsStatBarShowRAM] ? "shown" : "hidden",
                          [d boolForKey:kSettingsStatBarShowNet] ? "shown" : "hidden");
             }
             if (runRSSI) {
@@ -3245,7 +3258,7 @@ void settings_run_actions(void)
                 log_user("[OK] Sandbox-extension patch stage finished.\n");
                 cyanide_upload_log_milestone(@"sandbox-ext-patched");
             }
-            printf("[SETTINGS] actions escape=%d patch=%d sbc=%d dock=%ld hs=%ldx%ld hideLabels=%d dark=%d power=%d level=%s statbar=%d celsius=%d showNet=%d showCPU=%d rssi=%d rssiWifi=%d rssiCell=%d axon=%d rcReady=%d\n",
+            printf("[SETTINGS] actions escape=%d patch=%d sbc=%d dock=%ld hs=%ldx%ld hideLabels=%d dark=%d power=%d level=%s statbar=%d showTemp=%d celsius=%d showCPU=%d showRAM=%d showNet=%d rssi=%d rssiWifi=%d rssiCell=%d axon=%d rcReady=%d\n",
                    runSandboxEscape,
                    patchSandboxExt,
                    runSBC,
@@ -3257,9 +3270,11 @@ void settings_run_actions(void)
                    runPowercuff,
                    ([d stringForKey:kSettingsPowercuffLevel] ?: @"").UTF8String,
                    runStatBar,
+                   [d boolForKey:kSettingsStatBarShowTemp],
                    [d boolForKey:kSettingsStatBarCelsius],
-                   [d boolForKey:kSettingsStatBarShowNet],
                    [d boolForKey:kSettingsStatBarShowCPU],
+                   [d boolForKey:kSettingsStatBarShowRAM],
+                   [d boolForKey:kSettingsStatBarShowNet],
                    runRSSI,
                    [d boolForKey:kSettingsRSSIDisplayWifi],
                    [d boolForKey:kSettingsRSSIDisplayCell],
@@ -3390,8 +3405,10 @@ void settings_run_actions(void)
                     if (runStatBar) {
                         settings_progress(&step, total, "Starting StatBar overlay and 1s feed");
                         bool ok = statbar_apply_in_session([d boolForKey:kSettingsStatBarCelsius],
-                                                           [d boolForKey:kSettingsStatBarShowNet],
+                                                           [d boolForKey:kSettingsStatBarShowTemp],
                                                            [d boolForKey:kSettingsStatBarShowCPU],
+                                                           [d boolForKey:kSettingsStatBarShowRAM],
+                                                           [d boolForKey:kSettingsStatBarShowNet],
                                                            [d boolForKey:kSettingsStatBarShowLabels]);
                         settings_mark_tweak_applied(kSettingsStatBarEnabled,
                                                     ok && [d boolForKey:kSettingsStatBarEnabled]);
@@ -4202,8 +4219,10 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
 - (NSArray<NSDictionary *> *)statbarRows
 {
     return @[
+        @{ @"kind": @"toggle", @"key": kSettingsStatBarShowTemp,    @"title": @"Show Temperature" },
         @{ @"kind": @"toggle", @"key": kSettingsStatBarCelsius,     @"title": @"Celsius" },
         @{ @"kind": @"toggle", @"key": kSettingsStatBarShowCPU,     @"title": @"Show CPU %" },
+        @{ @"kind": @"toggle", @"key": kSettingsStatBarShowRAM,     @"title": @"Show RAM" },
         @{ @"kind": @"toggle", @"key": kSettingsStatBarShowLabels,  @"title": @"Show CPU / RAM labels" },
         @{ @"kind": @"toggle", @"key": kSettingsStatBarShowNet,     @"title": @"Show network speed" },
     ];

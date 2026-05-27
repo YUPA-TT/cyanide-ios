@@ -289,22 +289,24 @@ static NSString *format_net_slot(double kbValue)
     return pad_left_visual(token, 6);
 }
 
-static NSString *build_text(bool celsius, bool showNet, bool showCPU, bool showLabels)
+static NSString *build_text(bool celsius, bool showTemp, bool showCPU, bool showRAM, bool showNet, bool showLabels)
 {
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
 
     // Slot order: temp -> cpu -> ram -> net. `showNet` controls whether the
     // wider (260+) layout is used; in that mode, numbers are visually padded
     // to keep columns aligned as digits change.
-    double tempC = read_battery_temp_c();
-    if (tempC > 0) {
-        double v = celsius ? tempC : (tempC * 9.0 / 5.0 + 32.0);
-        NSString *num = [NSString stringWithFormat:@"%.2f", v];
-        NSString *displayNum = showNet ? pad_left_visual(num, 6) : num;
-        [parts addObject:[NSString stringWithFormat:@"%@\u00B0%c",
-                          displayNum, celsius ? 'C' : 'F']];
-    } else if (statbar_should_log_tick()) {
-        printf("[STATBAR] temp unavailable this tick\n");
+    if (showTemp) {
+        double tempC = read_battery_temp_c();
+        if (tempC > 0) {
+            double v = celsius ? tempC : (tempC * 9.0 / 5.0 + 32.0);
+            NSString *num = [NSString stringWithFormat:@"%.2f", v];
+            NSString *displayNum = showNet ? pad_left_visual(num, 6) : num;
+            [parts addObject:[NSString stringWithFormat:@"%@\u00B0%c",
+                              displayNum, celsius ? 'C' : 'F']];
+        } else if (statbar_should_log_tick()) {
+            printf("[STATBAR] temp unavailable this tick\n");
+        }
     }
     if (showCPU) {
         double pct = read_cpu_percent();
@@ -315,17 +317,19 @@ static NSString *build_text(bool celsius, bool showNet, bool showCPU, bool showL
         [parts addObject:[NSString stringWithFormat:@"%@%%%@", displayNum,
                           showLabels ? @" CPU" : @""]];
     }
-    double freeGB = read_free_ram_gb();
-    if (freeGB > 0) {
-        NSString *suffix = showLabels ? @" RAM" : @"";
-        if (freeGB < 1.0) {
-            NSString *num = [NSString stringWithFormat:@"%.2f", freeGB * 1024.0];
-            NSString *displayNum = showNet ? pad_left_visual(num, 6) : num;
-            [parts addObject:[NSString stringWithFormat:@"%@MB%@", displayNum, suffix]];
-        } else {
-            NSString *num = [NSString stringWithFormat:@"%.2f", freeGB];
-            NSString *displayNum = showNet ? pad_left_visual(num, 6) : num;
-            [parts addObject:[NSString stringWithFormat:@"%@GB%@", displayNum, suffix]];
+    if (showRAM) {
+        double freeGB = read_free_ram_gb();
+        if (freeGB > 0) {
+            NSString *suffix = showLabels ? @" RAM" : @"";
+            if (freeGB < 1.0) {
+                NSString *num = [NSString stringWithFormat:@"%.2f", freeGB * 1024.0];
+                NSString *displayNum = showNet ? pad_left_visual(num, 6) : num;
+                [parts addObject:[NSString stringWithFormat:@"%@MB%@", displayNum, suffix]];
+            } else {
+                NSString *num = [NSString stringWithFormat:@"%.2f", freeGB];
+                NSString *displayNum = showNet ? pad_left_visual(num, 6) : num;
+                [parts addObject:[NSString stringWithFormat:@"%@GB%@", displayNum, suffix]];
+            }
         }
     }
     if (showNet) {
@@ -430,15 +434,50 @@ void statbar_forget_remote_state(void)
     printf("[STATBAR] forgot remote overlay state\n");
 }
 
-static double statbar_overlay_width(bool showNet, bool showCPU, bool showLabels)
+static double statbar_overlay_width(bool showTemp, bool showCPU, bool showRAM, bool showNet, bool showLabels)
 {
-    double base = showNet ? 260.0 : 140.0;
-    if (showCPU) base += 50.0;
-    if (showLabels) {
-        // Each appended " CPU" / " RAM" token adds visible width.
-        base += showCPU ? 70.0 : 35.0;
+    // 基础宽度：每个项目大约需要的空间
+    // 温度: ~70px (例如 "25.50°C")
+    // CPU: ~50px (例如 "45%") 或 ~120px (带 " CPU" 标签)
+    // RAM: ~70px (例如 "2.50GB") 或 ~105px (带 " RAM" 标签)
+    // 网速: ~180px (例如 "↓  1KB ↑  7KB")
+    // 分隔符: 每个 " | " 约 15px
+    
+    double width = 0.0;
+    int itemCount = 0;
+    
+    if (showTemp) {
+        width += 70.0;
+        itemCount++;
     }
-    return base;
+    
+    if (showCPU) {
+        width += showLabels ? 120.0 : 50.0;
+        itemCount++;
+    }
+    
+    if (showRAM) {
+        width += showLabels ? 105.0 : 70.0;
+        itemCount++;
+    }
+    
+    if (showNet) {
+        width += 180.0;
+        itemCount++;
+    }
+    
+    // 添加分隔符的宽度 (项目之间的 " | ")
+    if (itemCount > 1) {
+        width += (itemCount - 1) * 15.0;
+    }
+    
+    // 添加左右内边距
+    width += 20.0;
+    
+    // 如果没有任何项目，返回最小宽度
+    if (width < 60.0) width = 60.0;
+    
+    return width;
 }
 
 static bool statbar_set_text_fast(uint64_t label, uint64_t textObj)
@@ -637,7 +676,8 @@ static void statbar_apply_overlay_style(uint64_t label)
 }
 
 static bool statbar_apply_overlay_layout(uint64_t win, uint64_t label,
-                                         bool showNet, bool showCPU, bool showLabels)
+                                         bool showTemp, bool showCPU, bool showRAM, 
+                                         bool showNet, bool showLabels)
 {
     if (!r_is_objc_ptr(win)) return false;
 
@@ -645,7 +685,7 @@ static bool statbar_apply_overlay_layout(uint64_t win, uint64_t label,
     double screenWidth = statbar_valid_screen_length(metrics.screenWidth) ?
                          metrics.screenWidth : kStatBarFallbackScreenWidth;
     double maxWidth = fmax(1.0, screenWidth - (kStatBarScreenSideMargin * 2.0));
-    double width = fmin(statbar_overlay_width(showNet, showCPU, showLabels), maxWidth);
+    double width = fmin(statbar_overlay_width(showTemp, showCPU, showRAM, showNet, showLabels), maxWidth);
     double x = floor((screenWidth - width) / 2.0);
     if (x < 0.0) x = 0.0;
     double y = statbar_overlay_y_for_top_area(metrics.topAreaHeight);
@@ -672,7 +712,8 @@ static bool statbar_apply_overlay_layout(uint64_t win, uint64_t label,
     return ok;
 }
 
-static bool statbar_install_overlay(NSString *text, bool showNet, bool showCPU, bool showLabels)
+static bool statbar_install_overlay(NSString *text, bool showTemp, bool showCPU, 
+                                    bool showRAM, bool showNet, bool showLabels)
 {
     if (statbar_should_log_tick())
         printf("[STATBAR] overlay: entry (dedicated UIWindow)\n");
@@ -686,7 +727,8 @@ static bool statbar_install_overlay(NSString *text, bool showNet, bool showCPU, 
         bool ok = statbar_set_text_fast(gStatBarOverlayLabel, textObj);
         statbar_release_remote_obj(textObj);
         if (ok) {
-            statbar_apply_overlay_layout(gStatBarOverlayWindow, gStatBarOverlayLabel, showNet, showCPU, showLabels);
+            statbar_apply_overlay_layout(gStatBarOverlayWindow, gStatBarOverlayLabel, 
+                                        showTemp, showCPU, showRAM, showNet, showLabels);
             if (statbar_should_log_tick())
                 printf("[STATBAR] overlay: fast cached text updated\n");
             return true;
@@ -728,7 +770,8 @@ static bool statbar_install_overlay(NSString *text, bool showNet, bool showCPU, 
             gStatBarOverlayWindow = cachedWin;
             gStatBarOverlayLabel = cachedLabel;
             statbar_set_text_fast(cachedLabel, textObj);
-            statbar_apply_overlay_layout(cachedWin, cachedLabel, showNet, showCPU, showLabels);
+            statbar_apply_overlay_layout(cachedWin, cachedLabel, 
+                                        showTemp, showCPU, showRAM, showNet, showLabels);
             r_msg2_main(cachedWin, "setHidden:", 0, 0, 0, 0);
             statbar_release_remote_obj(textObj);
             if (statbar_should_log_tick())
@@ -792,7 +835,7 @@ static bool statbar_install_overlay(NSString *text, bool showNet, bool showCPU, 
         if (r_is_objc_ptr(white)) r_msg2_main(label, "setTextColor:", white, 0, 0, 0);
     }
 
-    statbar_apply_overlay_layout(win, label, showNet, showCPU, showLabels);
+    statbar_apply_overlay_layout(win, label, showTemp, showCPU, showRAM, showNet, showLabels);
     r_msg2_main(win, "addSubview:", label, 0, 0, 0);
     r_msg2_main(win, "setHidden:", 0, 0, 0, 0);
     r_dlsym_call(R_TIMEOUT, "objc_setAssociatedObject", app, assocKey, win, 1, 0, 0, 0, 0);
@@ -866,26 +909,26 @@ recurse: {
     }
 }
 
-bool statbar_apply_in_session(bool celsius, bool showNet, bool showCPU, bool showLabels)
+bool statbar_apply_in_session(bool celsius, bool showTemp, bool showCPU, bool showRAM, bool showNet, bool showLabels)
 {
     gStatBarApplyTick++;
-    NSString *text = build_text(celsius, showNet, showCPU, showLabels);
+    NSString *text = build_text(celsius, showTemp, showCPU, showRAM, showNet, showLabels);
     if (statbar_should_log_tick()) {
-        printf("[STATBAR] === entry === text='%s' celsius=%d showNet=%d showCPU=%d showLabels=%d tick=%llu\n",
-               text.UTF8String, celsius, showNet, showCPU, showLabels, gStatBarApplyTick);
+        printf("[STATBAR] === entry === text='%s' celsius=%d showTemp=%d showCPU=%d showRAM=%d showNet=%d showLabels=%d tick=%llu\n",
+               text.UTF8String, celsius, showTemp, showCPU, showRAM, showNet, showLabels, gStatBarApplyTick);
     }
 
-    return statbar_install_overlay(text, showNet, showCPU, showLabels);
+    return statbar_install_overlay(text, showTemp, showCPU, showRAM, showNet, showLabels);
 }
 
-bool statbar_apply(bool celsius, bool showNet, bool showCPU, bool showLabels)
+bool statbar_apply(bool celsius, bool showTemp, bool showCPU, bool showRAM, bool showNet, bool showLabels)
 {
     if (init_remote_call("SpringBoard", false) != 0) {
         printf("[STATBAR] init_remote_call(SpringBoard) failed\n");
         return false;
     }
 
-    bool ok = statbar_apply_in_session(celsius, showNet, showCPU, showLabels);
+    bool ok = statbar_apply_in_session(celsius, showTemp, showCPU, showRAM, showNet, showLabels);
     destroy_remote_call();
     return ok;
 }
