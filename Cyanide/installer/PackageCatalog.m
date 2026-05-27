@@ -13,11 +13,12 @@
 // detail-mode SettingsViewController push).
 static const NSInteger kSecSBC          = 4;
 static const NSInteger kSecStatBar      = 5;
-static const NSInteger kSecRSSI         = 6;
-static const NSInteger kSecPowercuff    = 9;
-static const NSInteger kSecLayoutExtras = 11;
-static const NSInteger kSecNanoRegistry = 12;
-static const NSInteger kSecThemer       = 13;
+static const NSInteger kSecNSBar        = 6;
+static const NSInteger kSecRSSI         = 7;
+static const NSInteger kSecPowercuff    = 10;
+static const NSInteger kSecLayoutExtras = 12;
+static const NSInteger kSecNanoRegistry = 13;
+static const NSInteger kSecThemer       = 14;
 
 + (NSArray<Package *> *)allPackages
 {
@@ -53,6 +54,19 @@ static const NSInteger kSecThemer       = 13;
                                      enabledKey:kSettingsStatBarEnabled
                                           isNew:NO];
         statBar.settingsSection = kSecStatBar;
+
+        Package *nsBar = [[Package alloc] initWithIdentifier:@"com.darksword.nsbar"
+                                           name:@"NSBar"
+                               shortDescription:@"Network speed overlay in status bar area"
+                                longDescription:@"Displays real-time network speed (download/upload) in a compact overlay window positioned in the status bar area. Choose from 4 positions: top-left, bottom-left, top-right, or bottom-right.\n\nRefreshes about once per second while the RemoteCall session is alive. Configure position in the Settings tab."
+                                        version:version
+                                         author:@"d1y"
+                                       category:@"Other Tweaks"
+                                     symbolName:@"network"
+                                           kind:PackageInstallKindToggle
+                                     enabledKey:kSettingsNSBarEnabled
+                                          isNew:YES];
+        nsBar.settingsSection = kSecNSBar;
 
         Package *signal = [[Package alloc] initWithIdentifier:@"com.darksword.rssidisplay"
                                            name:@"Signal Readouts"
@@ -165,6 +179,7 @@ static const NSInteger kSecThemer       = 13;
 
         list = @[
             statBar,
+            nsBar,
             sbc,
             layoutExtras,
             powercuff,
@@ -263,6 +278,7 @@ static const NSInteger kSecThemer       = 13;
         @"System Updates",
         @"System",
         @"SpringBoard Tweaks",
+        @"Other Tweaks",
     ];
     NSMutableArray<NSString *> *all = [NSMutableArray array];
     for (Package *p in [self allPackages]) {

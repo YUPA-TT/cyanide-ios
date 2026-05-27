@@ -8,6 +8,7 @@
 #import "tweaks/sbcustomizer.h"
 #import "tweaks/powercuff.h"
 #import "tweaks/statbar.h"
+#import "tweaks/nsbar.h"
 #import "tweaks/rssidisplay.h"
 #import "tweaks/axonlite.h"
 #import "tweaks/typebanner.h"
@@ -158,6 +159,9 @@ NSString * const kSettingsStatBarShowRAM = @"StatBarShowRAM";
 NSString * const kSettingsStatBarShowNet = @"StatBarShowNet";
 NSString * const kSettingsStatBarShowLabels = @"StatBarShowLabels";
 
+NSString * const kSettingsNSBarEnabled = @"NSBarEnabled";
+NSString * const kSettingsNSBarPosition = @"NSBarPosition";
+
 NSString * const kSettingsRSSIDisplayEnabled = @"RSSIDisplayEnabled";
 NSString * const kSettingsRSSIDisplayWifi    = @"RSSIDisplayWifi";
 NSString * const kSettingsRSSIDisplayCell    = @"RSSIDisplayCell";
@@ -205,6 +209,8 @@ static volatile int g_springboard_rc_ready = 0;
 static volatile int g_springboard_sandbox_escaped = 0;
 static volatile int g_statbar_live_running = 0;
 static volatile int g_statbar_live_stop_requested = 0;
+static volatile int g_nsbar_live_running = 0;
+static volatile int g_nsbar_live_stop_requested = 0;
 static volatile int g_rssi_live_running = 0;
 static volatile int g_rssi_live_stop_requested = 0;
 static volatile int g_axonlite_live_running = 0;
@@ -343,6 +349,7 @@ static NSArray<NSString *> *settings_rc_backed_tweak_keys(void)
         keys = @[
             kSettingsSBCEnabled,
             kSettingsStatBarEnabled,
+            kSettingsNSBarEnabled,
             kSettingsRSSIDisplayEnabled,
             kSettingsAxonLiteEnabled,
             kSettingsTypeBannerEnabled,
@@ -400,6 +407,7 @@ static uint64_t settings_now_us(void) {
 }
 
 static void settings_apply_statbar_once_async(const char *reason);
+static void settings_apply_nsbar_once_async(const char *reason);
 static void settings_apply_rssi_once_async(const char *reason);
 static void settings_start_rssi_live_loop(void);
 static void settings_start_typebanner_live_loop(void);
@@ -565,6 +573,7 @@ static void settings_stop_axonlite_then_forget_locked(const char *reason)
 static void settings_forget_springboard_tweak_state_locked(void)
 {
     statbar_forget_remote_state();
+    nsbar_forget_remote_state();
     rssidisplay_forget_remote_state();
     axonlite_forget_remote_state();
     typebanner_forget_remote_state();
@@ -653,6 +662,7 @@ static void settings_install_screen_awake_observers(void)
             (void)token;
             if (settings_refresh_screen_awake_state("springboard.hasBlankedScreen")) {
                 settings_apply_statbar_once_async("screen awake");
+                settings_apply_nsbar_once_async("screen awake");
                 settings_schedule_themer_quiet_repair_burst("screen awake");
             }
         });
@@ -666,6 +676,7 @@ static void settings_install_screen_awake_observers(void)
             (void)token;
             if (settings_refresh_screen_awake_state("iokit.displayStatus")) {
                 settings_apply_statbar_once_async("screen awake");
+                settings_apply_nsbar_once_async("screen awake");
                 settings_schedule_themer_quiet_repair_burst("display awake");
             }
         });
@@ -733,6 +744,7 @@ static void settings_install_screen_awake_observers(void)
             (void)note;
             (void)settings_refresh_screen_awake_state("app became active");
             settings_apply_statbar_once_async("app became active");
+            settings_apply_nsbar_once_async("app became active");
             settings_schedule_themer_quiet_repair_burst("app became active");
         }];
 
@@ -852,7 +864,7 @@ static void settings_request_all_live_loops_stop(const char *reason)
 
 static BOOL settings_has_active_termination_live_tweak(void)
 {
-    if (g_statbar_live_running || g_rssi_live_running ||
+    if (g_statbar_live_running || g_nsbar_live_running || g_rssi_live_running ||
         g_axonlite_live_running || g_typebanner_live_running) {
         return YES;
     }
@@ -884,7 +896,7 @@ static void settings_wait_live_loops_stopped_for_switch(const char *reason)
 {
     uint64_t startUS = settings_now_us();
     BOOL logged = NO;
-    while (g_statbar_live_running || g_rssi_live_running ||
+    while (g_statbar_live_running || g_nsbar_live_running || g_rssi_live_running ||
            g_axonlite_live_running || g_typebanner_live_running ||
            g_themer_live_running || g_themer_repair_running) {
         uint64_t nowUS = settings_now_us();
@@ -895,16 +907,16 @@ static void settings_wait_live_loops_stopped_for_switch(const char *reason)
             logged = YES;
         }
         if (elapsedUS >= 2000000ULL) {
-            printf("[SETTINGS] live loop stop wait timed out%s%s stat=%d rssi=%d axon=%d type=%d themer=%d\n",
+            printf("[SETTINGS] live loop stop wait timed out%s%s stat=%d nsbar=%d rssi=%d axon=%d type=%d themer=%d\n",
                    reason ? ": " : "", reason ?: "",
-                   g_statbar_live_running, g_rssi_live_running,
+                   g_statbar_live_running, g_nsbar_live_running, g_rssi_live_running,
                    g_axonlite_live_running, g_typebanner_live_running,
                    g_themer_live_running || g_themer_repair_running);
             break;
         }
         usleep(50000);
     }
-    if (logged && !g_statbar_live_running && !g_rssi_live_running &&
+    if (logged && !g_statbar_live_running && !g_nsbar_live_running && !g_rssi_live_running &&
         !g_axonlite_live_running && !g_typebanner_live_running &&
         !g_themer_live_running && !g_themer_repair_running) {
         printf("[SETTINGS] live RemoteCall loops stopped%s%s\n",
@@ -1024,6 +1036,10 @@ static void settings_show_respring_overlay(UIViewController *fallback)
 
 static NSArray<NSString *> *powercuff_levels(void) {
     return @[ @"off", @"nominal", @"light", @"moderate", @"heavy" ];
+}
+
+static NSArray<NSString *> *nsbar_positions(void) {
+    return @[ @"Top Left", @"Bottom Left", @"Top Right", @"Bottom Right", @"Center" ];
 }
 
 static NSComparisonResult settings_compare_system_version(NSString *target)
@@ -2034,6 +2050,184 @@ static void settings_apply_statbar_once_async(const char *reason)
     });
 }
 
+static void settings_start_nsbar_live_loop(void)
+{
+    if (!settings_device_supported()) return;
+    if (settings_cleanup_in_progress()) return;
+
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if (![d boolForKey:kSettingsNSBarEnabled]) return;
+
+    if (__sync_lock_test_and_set(&g_nsbar_live_running, 1)) {
+        static volatile int loggedAlready = 0;
+        if (__sync_bool_compare_and_swap(&loggedAlready, 0, 1)) {
+            printf("[SETTINGS] NSBar live loop already running\n");
+        }
+        return;
+    }
+
+    if (settings_cleanup_in_progress()) {
+        __sync_lock_release(&g_nsbar_live_running);
+        return;
+    }
+
+    g_nsbar_live_stop_requested = 0;
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        NSUInteger tick = 0;
+        NSUInteger failures = 0;
+        uint64_t nextTickUS = settings_now_us();
+        BOOL pausedForSleep = NO;
+
+        printf("[SETTINGS] NSBar live loop started interval=%uus background=%uus max=%lu\n",
+               kStatBarLiveIntervalUS,
+               kStatBarLiveBackgroundIntervalUS,
+               (unsigned long)kStatBarLiveMaxTicks);
+        cyanide_upload_log_milestone(@"nsbar-live-started");
+
+        @try {
+            while ([d boolForKey:kSettingsNSBarEnabled] &&
+                   !settings_cleanup_in_progress() &&
+                   !g_nsbar_live_stop_requested &&
+                   tick < kStatBarLiveMaxTicks) {
+                useconds_t intervalUS = settings_live_interval(kStatBarLiveIntervalUS,
+                                                               kStatBarLiveBackgroundIntervalUS);
+                if (!settings_statbar_screen_awake()) {
+                    if (!pausedForSleep) {
+                        pausedForSleep = YES;
+                        printf("[SETTINGS] NSBar paused while screen is asleep\n");
+                    }
+                    settings_live_loop_sleep_interruptible(0,
+                                                           intervalUS,
+                                                           &g_nsbar_live_stop_requested);
+                    nextTickUS = settings_now_us();
+                    continue;
+                }
+                if (pausedForSleep) {
+                    pausedForSleep = NO;
+                    printf("[SETTINGS] NSBar resumed after screen wake\n");
+                }
+
+                uint64_t tickStartUS = settings_now_us();
+                bool ok = false;
+
+                @synchronized (settings_rc_lock()) {
+                    if (g_nsbar_live_stop_requested) break;
+                    if (!g_springboard_rc_ready) {
+                        printf("[SETTINGS] NSBar loop has no SpringBoard RemoteCall session\n");
+                        failures++;
+                        break;
+                    }
+                    NSBarPosition position = (NSBarPosition)[d integerForKey:kSettingsNSBarPosition];
+                    ok = nsbar_apply_in_session(position);
+                }
+
+                if (tick == 0) {
+                    printf("[SETTINGS] NSBar result=%d\n", ok);
+                    cyanide_upload_log_milestone(ok ? @"nsbar-live-first-ok" : @"nsbar-live-first-failed");
+                }
+                if (ok) {
+                    failures = 0;
+                } else {
+                    failures++;
+                    printf("[SETTINGS] NSBar tick failed tick=%lu failures=%lu\n",
+                           (unsigned long)tick, (unsigned long)failures);
+                    if (failures >= settings_live_failure_limit(3)) break;
+                }
+
+                tick++;
+                if (![d boolForKey:kSettingsNSBarEnabled] ||
+                    g_nsbar_live_stop_requested ||
+                    tick >= kStatBarLiveMaxTicks) break;
+
+                uint64_t nowUS = settings_now_us();
+                uint64_t elapsedUS = (tickStartUS != 0 && nowUS >= tickStartUS) ? (nowUS - tickStartUS) : 0;
+                if (nextTickUS != 0) {
+                    intervalUS = settings_live_interval(kStatBarLiveIntervalUS,
+                                                        kStatBarLiveBackgroundIntervalUS);
+                    nextTickUS += intervalUS;
+                    if (nowUS < nextTickUS) {
+                        uint64_t sleepUS = nextTickUS - nowUS;
+                        if (settings_should_log_statbar_tick(tick - 1)) {
+                            printf("[SETTINGS] NSBar tick=%lu elapsed=%lluus sleep=%lluus mode=%s\n",
+                                   (unsigned long)(tick - 1),
+                                   elapsedUS,
+                                   sleepUS,
+                                   settings_live_context());
+                        }
+                        settings_live_loop_sleep_interruptible(nextTickUS,
+                                                               (useconds_t)sleepUS,
+                                                               &g_nsbar_live_stop_requested);
+                    } else {
+                        uint64_t overrunUS = nowUS - nextTickUS;
+                        if (settings_should_log_statbar_tick(tick - 1)) {
+                            printf("[SETTINGS] NSBar tick=%lu elapsed=%lluus overrun=%lluus mode=%s\n",
+                                   (unsigned long)(tick - 1),
+                                   elapsedUS,
+                                   overrunUS,
+                                   settings_live_context());
+                        }
+                        nextTickUS = nowUS;
+                    }
+                } else {
+                    settings_live_loop_sleep_interruptible(0,
+                                                           settings_live_interval(kStatBarLiveIntervalUS,
+                                                                                  kStatBarLiveBackgroundIntervalUS),
+                                                           &g_nsbar_live_stop_requested);
+                }
+            }
+        } @finally {
+            printf("[SETTINGS] NSBar live loop exited ticks=%lu enabled=%d failures=%lu stop=%d\n",
+                   (unsigned long)tick,
+                   [d boolForKey:kSettingsNSBarEnabled],
+                   (unsigned long)failures,
+                   g_nsbar_live_stop_requested);
+            if (![d boolForKey:kSettingsNSBarEnabled] || g_nsbar_live_stop_requested || failures > 0) {
+                // NSBar doesn't need background task management like StatBar
+            }
+            if (failures > 0)
+                cyanide_upload_log_milestone(@"nsbar-live-exited-failed");
+            __sync_lock_release(&g_nsbar_live_running);
+        }
+    });
+}
+
+static void settings_apply_nsbar_once_async(const char *reason)
+{
+    if (!settings_device_supported()) return;
+    if (settings_cleanup_in_progress()) return;
+
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if (![d boolForKey:kSettingsNSBarEnabled] || !g_springboard_rc_ready) return;
+    if (g_nsbar_live_running) return;
+
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        if (settings_cleanup_in_progress()) return;
+        bool ok = false;
+        (void)settings_refresh_screen_awake_state(reason ?: "nsbar apply");
+        if (!settings_screen_awake_cached()) {
+            printf("[SETTINGS] NSBar lifecycle apply%s%s skipped: screen asleep\n",
+                   reason ? ": " : "", reason ?: "");
+            settings_start_nsbar_live_loop();
+            return;
+        }
+        @synchronized (settings_rc_lock()) {
+            if (settings_cleanup_in_progress() ||
+                ![d boolForKey:kSettingsNSBarEnabled] ||
+                !g_springboard_rc_ready) return;
+            NSBarPosition position = (NSBarPosition)[d integerForKey:kSettingsNSBarPosition];
+            ok = nsbar_apply_in_session(position);
+        }
+        static volatile int lastResult = -1;
+        int now = ok ? 1 : 0;
+        if (now != lastResult) {
+            lastResult = now;
+            printf("[SETTINGS] NSBar lifecycle apply%s%s result=%d\n",
+                   reason ? ": " : "", reason ?: "", ok);
+        }
+        settings_start_nsbar_live_loop();
+    });
+}
+
 static void settings_start_rssi_live_loop(void)
 {
     if (!settings_device_supported()) return;
@@ -2756,6 +2950,7 @@ void settings_application_did_enter_background(void)
 
     printf("[SETTINGS] app entered background with app-side StatBar loop\n");
     settings_apply_statbar_once_async("entered background");
+    settings_apply_nsbar_once_async("entered background");
 }
 
 void settings_application_will_enter_foreground(void)
@@ -2765,6 +2960,7 @@ void settings_application_will_enter_foreground(void)
     settings_end_statbar_background_task_async("foreground");
     if (settings_cleanup_in_progress()) return;
     settings_apply_statbar_once_async("will enter foreground");
+    settings_apply_nsbar_once_async("will enter foreground");
     settings_apply_rssi_once_async("will enter foreground");
     settings_apply_axonlite_once_async("will enter foreground");
     settings_start_themer_live_loop();
@@ -2779,6 +2975,7 @@ void settings_application_did_become_active(void)
     g_app_in_background = 0;
     if (settings_cleanup_in_progress()) return;
     settings_apply_statbar_once_async("became active");
+    settings_apply_nsbar_once_async("became active");
     settings_apply_rssi_once_async("became active");
     settings_apply_axonlite_once_async("became active");
     settings_start_themer_live_loop();
@@ -2805,6 +3002,12 @@ static BOOL settings_key_is_statbar(NSString *key)
            [key isEqualToString:kSettingsStatBarShowRAM] ||
            [key isEqualToString:kSettingsStatBarShowNet] ||
            [key isEqualToString:kSettingsStatBarShowLabels];
+}
+
+static BOOL settings_key_is_nsbar(NSString *key)
+{
+    return [key isEqualToString:kSettingsNSBarEnabled] ||
+           [key isEqualToString:kSettingsNSBarPosition];
 }
 
 static BOOL settings_key_is_rssi(NSString *key)
@@ -2838,6 +3041,7 @@ static BOOL settings_key_affects_package_state(NSString *key)
     return [key isEqualToString:kSettingsSBCEnabled] ||
            [key isEqualToString:kSettingsPowercuffEnabled] ||
            [key isEqualToString:kSettingsStatBarEnabled] ||
+           [key isEqualToString:kSettingsNSBarEnabled] ||
            [key isEqualToString:kSettingsRSSIDisplayEnabled] ||
            [key isEqualToString:kSettingsAxonLiteEnabled] ||
            [key isEqualToString:kSettingsTypeBannerEnabled] ||
@@ -2973,6 +3177,35 @@ static void settings_schedule_live_apply_for_key(NSString *key)
         }
     }
 
+    if (settings_key_is_nsbar(key)) {
+        if ([d boolForKey:kSettingsNSBarEnabled] && g_springboard_rc_ready) {
+            dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                @synchronized (settings_rc_lock()) {
+                    if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
+                    NSBarPosition position = (NSBarPosition)[d integerForKey:kSettingsNSBarPosition];
+                    bool ok = nsbar_apply_in_session(position);
+                    settings_mark_tweak_applied(kSettingsNSBarEnabled,
+                                                ok && [d boolForKey:kSettingsNSBarEnabled]);
+                    printf("[SETTINGS] live NSBar apply result=%d\n", ok);
+                }
+                settings_start_nsbar_live_loop();
+                settings_notify_package_queue_changed_async();
+            });
+        } else if (![d boolForKey:kSettingsNSBarEnabled]) {
+            g_nsbar_live_stop_requested = 1;
+            settings_mark_tweak_applied(kSettingsNSBarEnabled, NO);
+            settings_notify_package_queue_changed_async();
+            if (g_springboard_rc_ready) {
+                dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                    @synchronized (settings_rc_lock()) {
+                        if (g_springboard_rc_ready) nsbar_stop_in_session();
+                    }
+                });
+            }
+        }
+        return;
+    }
+
     if (settings_key_is_rssi(key)) {
         if (!settings_rssi_install_allowed()) {
             if ([d boolForKey:kSettingsRSSIDisplayEnabled]) {
@@ -3101,6 +3334,9 @@ void settings_register_defaults(void)
         kSettingsStatBarShowNet:    @NO,
         kSettingsStatBarShowLabels: @YES,
 
+        kSettingsNSBarEnabled: @NO,
+        kSettingsNSBarPosition: @0,  // 0=TopLeft, 1=BottomLeft, 2=TopRight, 3=BottomRight
+
         kSettingsRSSIDisplayEnabled: @NO,
         kSettingsRSSIDisplayWifi:    @YES,
         kSettingsRSSIDisplayCell:    @YES,
@@ -3153,7 +3389,7 @@ void settings_run_actions(void)
             log_user("[RUN] Already running. Queued one follow-up run for the latest package state.\n");
             return;
         }
-        if (g_statbar_live_running || g_rssi_live_running ||
+        if (g_statbar_live_running || g_nsbar_live_running || g_rssi_live_running ||
             g_axonlite_live_running || g_typebanner_live_running) {
             settings_request_all_live_loops_stop("Apply Tweaks");
             settings_wait_live_loops_stopped_for_switch("Apply Tweaks");
@@ -3169,6 +3405,7 @@ void settings_run_actions(void)
             BOOL runSBC = [d boolForKey:kSettingsSBCEnabled];
             BOOL runDarkTweaks = settings_dark_tweaks_any_enabled(d);
             BOOL runStatBar = [d boolForKey:kSettingsStatBarEnabled];
+            BOOL runNSBar = [d boolForKey:kSettingsNSBarEnabled];
             BOOL runRSSI = settings_rssi_install_allowed() && [d boolForKey:kSettingsRSSIDisplayEnabled];
             BOOL runAxonLite = [d boolForKey:kSettingsAxonLiteEnabled];
             BOOL runTypeBanner = [d boolForKey:kSettingsTypeBannerEnabled];
@@ -3176,7 +3413,7 @@ void settings_run_actions(void)
             BOOL runLayoutExtras = [d boolForKey:kSettingsLayoutExtrasEnabled];
             // TypeBanner prewarms its hidden SpringBoard window during Apply
             // and reuses the open SpringBoard session for text-only updates.
-            BOOL needsSpringBoard = runSandboxEscape || runSBC || runDarkTweaks || runStatBar || runRSSI || runAxonLite || runLayoutExtras || runTypeBanner || runThemer;
+            BOOL needsSpringBoard = runSandboxEscape || runSBC || runDarkTweaks || runStatBar || runNSBar || runRSSI || runAxonLite || runLayoutExtras || runTypeBanner || runThemer;
 
             NSUInteger total = 1;
             if (patchSandboxExt) total++;
@@ -3188,6 +3425,7 @@ void settings_run_actions(void)
             if (runLayoutExtras) total++;
             if (runThemer) total++;
             if (runStatBar) total++;
+            if (runNSBar) total++;
             if (runRSSI) total++;
             if (runAxonLite) total++;
             if (runTypeBanner) total++;
@@ -3419,6 +3657,19 @@ void settings_run_actions(void)
                         cyanide_upload_log_milestone(ok ? @"statbar-initial-applied" : @"statbar-initial-failed");
                     }
 
+                    if (runNSBar) {
+                        settings_progress(&step, total, "Starting NSBar network speed overlay and 1s feed");
+                        NSBarPosition position = (NSBarPosition)[d integerForKey:kSettingsNSBarPosition];
+                        bool ok = nsbar_apply_in_session(position);
+                        settings_mark_tweak_applied(kSettingsNSBarEnabled,
+                                                    ok && [d boolForKey:kSettingsNSBarEnabled]);
+                        printf("[SETTINGS] NSBar result=%d\n", ok);
+                        log_user("%s NSBar %s.\n",
+                                 ok ? "[OK]" : "[WARN]",
+                                 ok ? "receiving live data" : "did not start cleanly");
+                        cyanide_upload_log_milestone(ok ? @"nsbar-initial-applied" : @"nsbar-initial-failed");
+                    }
+
                     if (runRSSI) {
                         settings_progress(&step, total, "Starting RSSI dBm signal overlays");
                         bool ok = rssidisplay_apply_in_session([d boolForKey:kSettingsRSSIDisplayWifi],
@@ -3460,6 +3711,11 @@ void settings_run_actions(void)
                     settings_start_statbar_live_loop();
                 } else {
                     g_statbar_live_stop_requested = 1;
+                }
+                if (runNSBar) {
+                    settings_start_nsbar_live_loop();
+                } else {
+                    g_nsbar_live_stop_requested = 1;
                 }
                 if (runRSSI) {
                     settings_start_rssi_live_loop();
@@ -3545,6 +3801,7 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     SectionOTA,
     SectionSBC,
     SectionStatBar,
+    SectionNSBar,
     SectionRSSI,
     SectionAxonLite,
     SectionTypeBanner,
@@ -4228,6 +4485,13 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     ];
 }
 
+- (NSArray<NSDictionary *> *)nsbarRows
+{
+    return @[
+        @{ @"kind": @"segmented", @"key": kSettingsNSBarPosition, @"title": @"Position" },
+    ];
+}
+
 - (NSArray<NSDictionary *> *)rssiRows
 {
     return @[
@@ -4335,6 +4599,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         case SectionThemer:  return self.themerRows;
         case SectionPowercuff: return self.powercuffRows;
         case SectionStatBar:   return self.statbarRows;
+        case SectionNSBar:     return self.nsbarRows;
         case SectionRSSI:      return self.rssiRows;
         case SectionAxonLite:  return self.axonLiteRows;
         case SectionTypeBanner: return self.typebannerRows;
@@ -4354,6 +4619,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         @{ @"title": @"Launch Options",     @"icon": @"bolt.fill",                          @"color": [UIColor systemRedColor],    @"section": @(SectionLaunch) },
         @{ @"title": @"SBCustomizer",       @"icon": @"square.grid.3x3.fill",                @"color": [UIColor systemBlueColor],   @"section": @(SectionSBC) },
         @{ @"title": @"StatBar",            @"icon": @"thermometer.medium",                  @"color": [UIColor systemRedColor],    @"section": @(SectionStatBar) },
+        @{ @"title": @"NSBar",              @"icon": @"network",                             @"color": [UIColor systemGreenColor],  @"section": @(SectionNSBar) },
         @{ @"title": @"Signal Display",     @"icon": @"antenna.radiowaves.left.and.right",   @"color": [UIColor systemBlueColor],   @"section": @(SectionRSSI), @"experimental": @YES },
         @{ @"title": @"Axon Lite",          @"icon": @"bell.badge.fill",                     @"color": [UIColor systemRedColor],    @"section": @(SectionAxonLite) },
         @{ @"title": @"TypeBanner",         @"icon": @"ellipsis.bubble.fill",                @"color": [UIColor systemTealColor],   @"section": @(SectionTypeBanner), @"experimental": @YES },
@@ -5686,14 +5952,35 @@ void cyanide_present_contact(UIViewController *host)
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
         cell.textLabel.text = nil;
         for (UIView *v in [cell.contentView.subviews copy]) [v removeFromSuperview];
-        UISegmentedControl *seg = [[UISegmentedControl alloc] initWithItems:powercuff_levels()];
+        
+        NSString *key = row[@"key"];
+        NSArray<NSString *> *items = nil;
+        id currentValue = nil;
+        NSUInteger selectedIndex = 0;
+        SEL changeAction = nil;
+        
+        if ([key isEqualToString:kSettingsPowercuffLevel]) {
+            items = powercuff_levels();
+            currentValue = [d stringForKey:key] ?: @"nominal";
+            selectedIndex = [items indexOfObject:currentValue];
+            if (selectedIndex == NSNotFound) selectedIndex = [items indexOfObject:@"nominal"];
+            changeAction = @selector(powercuffSegChanged:);
+        } else if ([key isEqualToString:kSettingsNSBarPosition]) {
+            items = nsbar_positions();
+            NSInteger pos = [d integerForKey:key];
+            selectedIndex = (pos >= 0 && pos < (NSInteger)items.count) ? pos : 0;
+            changeAction = @selector(nsbarSegChanged:);
+        }
+        
+        if (!items) items = @[@"Error"];
+        
+        UISegmentedControl *seg = [[UISegmentedControl alloc] initWithItems:items];
         seg.translatesAutoresizingMaskIntoConstraints = NO;
-        NSString *cur = [d stringForKey:row[@"key"]] ?: @"nominal";
-        NSUInteger idx = [powercuff_levels() indexOfObject:cur];
-        if (idx == NSNotFound) idx = [powercuff_levels() indexOfObject:@"nominal"];
-        seg.selectedSegmentIndex = (NSInteger)idx;
+        seg.selectedSegmentIndex = (NSInteger)selectedIndex;
         seg.enabled = supported;
-        [seg addTarget:self action:@selector(powercuffSegChanged:) forControlEvents:UIControlEventValueChanged];
+        if (changeAction) {
+            [seg addTarget:self action:changeAction forControlEvents:UIControlEventValueChanged];
+        }
         [cell.contentView addSubview:seg];
         [NSLayoutConstraint activateConstraints:@[
             [seg.leadingAnchor  constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.leadingAnchor],
@@ -5859,6 +6146,14 @@ void cyanide_present_contact(UIViewController *host)
     if (sender.selectedSegmentIndex < 0 || sender.selectedSegmentIndex >= (NSInteger)levels.count) return;
     [[NSUserDefaults standardUserDefaults] setObject:levels[sender.selectedSegmentIndex]
                                               forKey:kSettingsPowercuffLevel];
+}
+
+- (void)nsbarSegChanged:(UISegmentedControl *)sender
+{
+    if (sender.selectedSegmentIndex < 0 || sender.selectedSegmentIndex >= 5) return;
+    [[NSUserDefaults standardUserDefaults] setInteger:sender.selectedSegmentIndex
+                                               forKey:kSettingsNSBarPosition];
+    printf("[SETTINGS] NSBar position changed to: %ld\n", (long)sender.selectedSegmentIndex);
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
