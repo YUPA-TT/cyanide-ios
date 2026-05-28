@@ -8,6 +8,7 @@
 #import "tweaks/sbcustomizer.h"
 #import "tweaks/powercuff.h"
 #import "tweaks/statbar.h"
+#import <objc/runtime.h>
 #import "tweaks/nsbar.h"
 #import "tweaks/rssidisplay.h"
 #import "tweaks/axonlite.h"
@@ -18,8 +19,10 @@
 #import "tweaks/nano_registry.h"
 #import "tweaks/killallapps.h"
 #import "tweaks/themer.h"
+#import "tweaks/livewp.h"
 
 #import <objc/runtime.h>
+#import <dlfcn.h>
 #import "DSKeepAlive.h"
 #import "TaskRop/RemoteCall.h"
 #import "kexploit/kutils.h"
@@ -175,6 +178,19 @@ NSString * const kSettingsThemerThemeID = @"ThemerThemeID";
 NSString * const kSettingsThemerCustomThemePath = @"ThemerCustomThemePath";
 NSString * const kSettingsThemerCustomThemeName = @"ThemerCustomThemeName";
 
+NSString * const kSettingsLiveWPEnabled = @"LiveWPEnabled";
+NSString * const kSettingsLiveWPVideoPath = @"LiveWPVideoPath";
+
+// 从相对路径（如 "LiveWP/video.mp4"）拼接为绝对路径
+static NSString *settings_livewp_absolute_path(void) {
+    NSString *rel = [[NSUserDefaults standardUserDefaults] stringForKey:kSettingsLiveWPVideoPath];
+    if (!rel || rel.length == 0) return nil;
+    // 兼容旧版绝对路径
+    if ([rel hasPrefix:@"/"]) return rel;
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    return [docs stringByAppendingPathComponent:rel];
+}
+
 // Master gate for experimental tweaks. When NO (default), packages that opt
 // into the experimental category are hidden from the Installer and the
 // Settings bundle list, and any currently-enabled experimental tweak is
@@ -219,6 +235,8 @@ static volatile int g_typebanner_live_running = 0;
 static volatile int g_typebanner_live_stop_requested = 0;
 static volatile int g_themer_live_running = 0;
 static volatile int g_themer_live_stop_requested = 0;
+static volatile int g_livewp_live_running = 0;
+static volatile int g_livewp_live_stop_requested = 0;
 static volatile int g_themer_repair_running = 0;
 static volatile uint64_t g_themer_repair_generation = 0;
 static volatile int g_app_in_background = 0;
@@ -278,6 +296,9 @@ static const NSUInteger kThemerLiveMaxTicks = 86400;
 static const NSUInteger kThemerLegacyLiveMaxTicks = 1;
 static const useconds_t kThemerRepairInitialDelayUS = 900000;
 static const useconds_t kThemerRepairIntervalUS = 450000;
+static const useconds_t kLiveWPLiveIntervalUS = 1000000;
+static const useconds_t kLiveWPLiveBackgroundIntervalUS = 1500000;
+static const NSUInteger kLiveWPLiveMaxTicks = 43200;
 static NSString * const kSettingsRemoteCallStateDidChangeNotification = @"SettingsRemoteCallStateDidChangeNotification";
 NSString * const kSettingsActionsDidCompleteNotification = @"SettingsActionsDidCompleteNotification";
 NSString * const kSettingsActionsDidCompleteSuccessKey = @"success";
@@ -361,6 +382,7 @@ static NSArray<NSString *> *settings_rc_backed_tweak_keys(void)
             kSettingsDSDoubleTapToLock,
             kSettingsLayoutExtrasEnabled,
             kSettingsThemerEnabled,
+            kSettingsLiveWPEnabled,
         ];
     });
     return keys;
@@ -412,6 +434,7 @@ static void settings_apply_rssi_once_async(const char *reason);
 static void settings_start_rssi_live_loop(void);
 static void settings_start_typebanner_live_loop(void);
 static void settings_start_themer_live_loop(void);
+static void settings_start_livewp_live_loop(void);
 static void settings_schedule_themer_repair_burst(const char *reason);
 static void settings_schedule_themer_quiet_repair_burst(const char *reason);
 static void settings_notify_remote_call_state_changed(void);
@@ -579,6 +602,7 @@ static void settings_forget_springboard_tweak_state_locked(void)
     typebanner_forget_remote_state();
     killallapps_forget_remote_state();
     themer_forget_remote_state();
+    livewp_forget_remote_state();
 }
 
 static void settings_stop_springboard_tweaks_locked(const char *reason,
@@ -618,6 +642,14 @@ static void settings_stop_springboard_tweaks_locked(const char *reason,
     bool themeStopped = themer_stop_in_session();
     printf("[SETTINGS] %s Themer stop result=%d\n",
            reason ?: "SpringBoard cleanup", themeStopped);
+
+    bool livewpStopped = livewp_stop_in_session();
+    printf("[SETTINGS] %s LiveWP stop result=%d\n",
+           reason ?: "SpringBoard cleanup", livewpStopped);
+
+    bool nsbarStopped = nsbar_stop_in_session();
+    printf("[SETTINGS] %s NSBar stop result=%d\n",
+           reason ?: "SpringBoard cleanup", nsbarStopped);
 
     settings_forget_springboard_tweak_state_locked();
 }
@@ -857,6 +889,7 @@ static void settings_request_all_live_loops_stop(const char *reason)
     g_axonlite_live_stop_requested = 1;
     g_typebanner_live_stop_requested = 1;
     g_themer_live_stop_requested = 1;
+    g_livewp_live_stop_requested = 1;
     if (reason) {
         printf("[SETTINGS] requested all live RemoteCall loops stop: %s\n", reason);
     }
@@ -865,7 +898,8 @@ static void settings_request_all_live_loops_stop(const char *reason)
 static BOOL settings_has_active_termination_live_tweak(void)
 {
     if (g_statbar_live_running || g_nsbar_live_running || g_rssi_live_running ||
-        g_axonlite_live_running || g_typebanner_live_running) {
+        g_axonlite_live_running || g_typebanner_live_running ||
+        g_livewp_live_running) {
         return YES;
     }
 
@@ -877,7 +911,9 @@ static BOOL settings_has_active_termination_live_tweak(void)
            ([d boolForKey:kSettingsAxonLiteEnabled] &&
             settings_tweak_is_applied(kSettingsAxonLiteEnabled)) ||
            ([d boolForKey:kSettingsTypeBannerEnabled] &&
-            settings_tweak_is_applied(kSettingsTypeBannerEnabled));
+            settings_tweak_is_applied(kSettingsTypeBannerEnabled)) ||
+           ([d boolForKey:kSettingsLiveWPEnabled] &&
+            settings_tweak_is_applied(kSettingsLiveWPEnabled));
 }
 
 static BOOL settings_has_persistent_springboard_remote_call_user(void)
@@ -898,7 +934,8 @@ static void settings_wait_live_loops_stopped_for_switch(const char *reason)
     BOOL logged = NO;
     while (g_statbar_live_running || g_nsbar_live_running || g_rssi_live_running ||
            g_axonlite_live_running || g_typebanner_live_running ||
-           g_themer_live_running || g_themer_repair_running) {
+           g_themer_live_running || g_themer_repair_running ||
+           g_livewp_live_running) {
         uint64_t nowUS = settings_now_us();
         uint64_t elapsedUS = (startUS != 0 && nowUS >= startUS) ? nowUS - startUS : 0;
         if (!logged) {
@@ -907,18 +944,20 @@ static void settings_wait_live_loops_stopped_for_switch(const char *reason)
             logged = YES;
         }
         if (elapsedUS >= 2000000ULL) {
-            printf("[SETTINGS] live loop stop wait timed out%s%s stat=%d nsbar=%d rssi=%d axon=%d type=%d themer=%d\n",
+            printf("[SETTINGS] live loop stop wait timed out%s%s stat=%d nsbar=%d rssi=%d axon=%d type=%d themer=%d livewp=%d\n",
                    reason ? ": " : "", reason ?: "",
                    g_statbar_live_running, g_nsbar_live_running, g_rssi_live_running,
                    g_axonlite_live_running, g_typebanner_live_running,
-                   g_themer_live_running || g_themer_repair_running);
+                   g_themer_live_running || g_themer_repair_running,
+                   g_livewp_live_running);
             break;
         }
         usleep(50000);
     }
     if (logged && !g_statbar_live_running && !g_nsbar_live_running && !g_rssi_live_running &&
         !g_axonlite_live_running && !g_typebanner_live_running &&
-        !g_themer_live_running && !g_themer_repair_running) {
+        !g_themer_live_running && !g_themer_repair_running &&
+        !g_livewp_live_running) {
         printf("[SETTINGS] live RemoteCall loops stopped%s%s\n",
                reason ? ": " : "", reason ?: "");
     }
@@ -2797,6 +2836,75 @@ static void settings_start_themer_live_loop(void)
     });
 }
 
+static void settings_start_livewp_live_loop(void)
+{
+    if (!settings_device_supported()) return;
+    if (settings_cleanup_in_progress()) return;
+
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if (![d boolForKey:kSettingsLiveWPEnabled]) return;
+    if (!g_springboard_rc_ready) return;
+
+    if (__sync_lock_test_and_set(&g_livewp_live_running, 1)) {
+        return;
+    }
+
+    g_livewp_live_stop_requested = 0;
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        NSUInteger tick = 0;
+        NSUInteger failures = 0;
+        printf("[SETTINGS] LiveWP live repair loop started interval=%uus background=%uus max=%lu\n",
+               kLiveWPLiveIntervalUS,
+               kLiveWPLiveBackgroundIntervalUS,
+               (unsigned long)kLiveWPLiveMaxTicks);
+        @try {
+            settings_live_loop_sleep_interruptible(0,
+                                                   settings_live_interval(kLiveWPLiveIntervalUS,
+                                                                          kLiveWPLiveBackgroundIntervalUS),
+                                                   &g_livewp_live_stop_requested);
+            while ([d boolForKey:kSettingsLiveWPEnabled] &&
+                   !settings_cleanup_in_progress() &&
+                   !g_livewp_live_stop_requested &&
+                   tick < kLiveWPLiveMaxTicks) {
+                bool ok = false;
+                @synchronized (settings_rc_lock()) {
+                    if (g_livewp_live_stop_requested) break;
+                    if (!g_springboard_rc_ready) {
+                        failures++;
+                        break;
+                    }
+                    ok = livewp_repair_in_session();
+                }
+
+                if (tick == 0) {
+                    printf("[SETTINGS] LiveWP live first repair tick result=%d\n", ok);
+                }
+                failures = ok ? 0 : (failures + 1);
+                if (ok) {
+                    settings_mark_tweak_applied(kSettingsLiveWPEnabled, YES);
+                }
+
+                tick++;
+                if (![d boolForKey:kSettingsLiveWPEnabled] ||
+                    g_livewp_live_stop_requested ||
+                    tick >= kLiveWPLiveMaxTicks) break;
+
+                settings_live_loop_sleep_interruptible(0,
+                                                       settings_live_interval(kLiveWPLiveIntervalUS,
+                                                                              kLiveWPLiveBackgroundIntervalUS),
+                                                       &g_livewp_live_stop_requested);
+            }
+        } @finally {
+            printf("[SETTINGS] LiveWP live repair loop exited ticks=%lu enabled=%d failures=%lu stop=%d\n",
+                   (unsigned long)tick,
+                   [d boolForKey:kSettingsLiveWPEnabled],
+                   (unsigned long)failures,
+                   g_livewp_live_stop_requested);
+            __sync_lock_release(&g_livewp_live_running);
+        }
+    });
+}
+
 static void settings_schedule_themer_repair_burst_internal(const char *reason, BOOL force)
 {
     (void)force;
@@ -3046,6 +3154,7 @@ static BOOL settings_key_affects_package_state(NSString *key)
            [key isEqualToString:kSettingsAxonLiteEnabled] ||
            [key isEqualToString:kSettingsTypeBannerEnabled] ||
            [key isEqualToString:kSettingsThemerEnabled] ||
+           [key isEqualToString:kSettingsLiveWPEnabled] ||
            settings_key_is_dark_tweak(key);
 }
 
@@ -3274,6 +3383,34 @@ static void settings_schedule_live_apply_for_key(NSString *key)
         return;
     }
 
+    if ([key isEqualToString:kSettingsLiveWPEnabled]) {
+        if ([d boolForKey:kSettingsLiveWPEnabled] && g_springboard_rc_ready) {
+            dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                bool ok = false;
+                @synchronized (settings_rc_lock()) {
+                    if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
+                    ok = livewp_apply_in_session();
+                    settings_mark_tweak_applied(kSettingsLiveWPEnabled, ok);
+                    printf("[SETTINGS] live LiveWP apply result=%d\n", ok);
+                }
+                if (ok) settings_start_livewp_live_loop();
+                settings_notify_package_queue_changed_async();
+            });
+        } else if (![d boolForKey:kSettingsLiveWPEnabled]) {
+            g_livewp_live_stop_requested = 1;
+            settings_mark_tweak_applied(kSettingsLiveWPEnabled, NO);
+            settings_notify_package_queue_changed_async();
+            if (g_springboard_rc_ready) {
+                dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                    @synchronized (settings_rc_lock()) {
+                        if (g_springboard_rc_ready) livewp_stop_in_session();
+                    }
+                });
+            }
+        }
+        return;
+    }
+
     if (!settings_key_is_sbc(key) || !g_springboard_rc_ready) return;
 
     uint64_t generation = __sync_add_and_fetch(&g_sbc_live_apply_generation, 1);
@@ -3350,6 +3487,9 @@ void settings_register_defaults(void)
         kSettingsThemerCustomThemePath: @"",
         kSettingsThemerCustomThemeName: @"",
 
+        kSettingsLiveWPEnabled: @NO,
+        kSettingsLiveWPVideoPath: @"",
+
         kSettingsExperimentalTweaksEnabled: @NO,
 
         kSettingsNanoMaxPairing:       @(kNanoDefaultMaxPairing),
@@ -3411,9 +3551,10 @@ void settings_run_actions(void)
             BOOL runTypeBanner = [d boolForKey:kSettingsTypeBannerEnabled];
             BOOL runThemer = [d boolForKey:kSettingsThemerEnabled];
             BOOL runLayoutExtras = [d boolForKey:kSettingsLayoutExtrasEnabled];
+            BOOL runLiveWP = [d boolForKey:kSettingsLiveWPEnabled];
             // TypeBanner prewarms its hidden SpringBoard window during Apply
             // and reuses the open SpringBoard session for text-only updates.
-            BOOL needsSpringBoard = runSandboxEscape || runSBC || runDarkTweaks || runStatBar || runNSBar || runRSSI || runAxonLite || runLayoutExtras || runTypeBanner || runThemer;
+            BOOL needsSpringBoard = runSandboxEscape || runSBC || runDarkTweaks || runStatBar || runNSBar || runRSSI || runAxonLite || runLayoutExtras || runTypeBanner || runThemer || runLiveWP;
 
             NSUInteger total = 1;
             if (patchSandboxExt) total++;
@@ -3429,11 +3570,12 @@ void settings_run_actions(void)
             if (runRSSI) total++;
             if (runAxonLite) total++;
             if (runTypeBanner) total++;
+            if (runLiveWP) total++;
             NSUInteger step = 0;
 
             settings_log_run_context();
             log_user("[RUN] Verbose trace active; raw debug stream is mirrored into the app log.\n");
-            log_user("[PLAN] stages=%lu springboard=%s sbc=%s dark=%s statbar=%s rssi=%s axon=%s power=%s\n",
+            log_user("[PLAN] stages=%lu springboard=%s sbc=%s dark=%s statbar=%s rssi=%s axon=%s power=%s livewp=%s\n",
                      (unsigned long)total,
                      needsSpringBoard ? "yes" : "no",
                      runSBC ? "yes" : "no",
@@ -3441,7 +3583,8 @@ void settings_run_actions(void)
                      runStatBar ? "yes" : "no",
                      runRSSI ? "yes" : "no",
                      runAxonLite ? "yes" : "no",
-                     runPowercuff ? "yes" : "no");
+                     runPowercuff ? "yes" : "no",
+                     runLiveWP ? "yes" : "no");
             if (runSBC) {
                 log_user("[PLAN] Home layout target: dock=%ld home=%ldx%ld labels=%s\n",
                          (long)[d integerForKey:kSettingsSBCDockIcons],
@@ -3705,6 +3848,18 @@ void settings_run_actions(void)
                         cyanide_upload_log_milestone(ok ? @"axon-lite-initial-applied" :
                                                      (deferred ? @"axon-lite-initial-deferred" : @"axon-lite-initial-failed"));
                     }
+
+                    if (runLiveWP) {
+                        settings_progress(&step, total, "Starting LiveWP dynamic wallpaper");
+                        bool ok = livewp_apply_in_session();
+                        settings_mark_tweak_applied(kSettingsLiveWPEnabled,
+                                                    ok && [d boolForKey:kSettingsLiveWPEnabled]);
+                        printf("[SETTINGS] LiveWP result=%d\n", ok);
+                        log_user("%s LiveWP dynamic wallpaper %s.\n",
+                                 ok ? "[OK]" : "[WARN]",
+                                 ok ? "is playing" : "did not start cleanly");
+                        cyanide_upload_log_milestone(ok ? @"livewp-applied" : @"livewp-failed");
+                    }
                 }
 
                 if (runStatBar) {
@@ -3727,6 +3882,11 @@ void settings_run_actions(void)
                 } else {
                     g_axonlite_live_stop_requested = 1;
                 }
+                if (runLiveWP) {
+                    settings_start_livewp_live_loop();
+                } else {
+                    g_livewp_live_stop_requested = 1;
+                }
             }
 
             if (runTypeBanner) {
@@ -3745,7 +3905,7 @@ void settings_run_actions(void)
             } else {
                 g_typebanner_live_stop_requested = 1;
             }
-            if (runStatBar || runRSSI || runAxonLite || runTypeBanner)
+            if (runStatBar || runRSSI || runAxonLite || runTypeBanner || runLiveWP)
                 cyanide_upload_log_milestone(@"live-tweaks-started");
 
             if (!settings_has_persistent_springboard_remote_call_user()) {
@@ -3810,6 +3970,7 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     SectionLayoutExtras,
     SectionNanoRegistry,
     SectionThemer,
+    SectionLiveWP,
     SectionCount,
 };
 
@@ -4515,6 +4676,32 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     ];
 }
 
+- (NSArray<NSDictionary *> *)livewpRows
+{
+    NSString *absPath = settings_livewp_absolute_path();
+    NSString *videoName = @"No video selected";
+    BOOL hasVideo = (absPath && absPath.length > 0);
+    if (hasVideo) {
+        videoName = [absPath lastPathComponent];
+    }
+
+    NSMutableArray *rows = [NSMutableArray arrayWithArray:@[
+        @{ @"kind": @"info",
+           @"title": @"Video File",
+           @"value": videoName },
+        @{ @"kind": @"button",
+           @"title": @"Select Video File",
+           @"subtitle": @"Choose a video file to use as live wallpaper",
+           @"action": @"livewp-select-video" },
+    ]];
+
+    if (hasVideo) {
+        [rows addObject:@{ @"kind": @"preview", @"videoPath": absPath }];
+    }
+
+    return rows;
+}
+
 - (NSArray<NSDictionary *> *)themerRows
 {
     BOOL hasSelection = settings_themer_has_selected_theme();
@@ -4583,6 +4770,10 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         [out addObject:@{@"title": @"Multi-watch switch", @"value": [@([d integerForKey:kSettingsNanoMinQuickSwitch])   stringValue]}];
     } else if (section == SectionThemer) {
         [out addObject:@{@"title": @"Theme", @"value": settings_themer_selected_theme_display_name()}];
+    } else if (section == SectionLiveWP) {
+        NSString *absPath = settings_livewp_absolute_path();
+        NSString *videoName = (absPath && absPath.length > 0) ? [absPath lastPathComponent] : @"None";
+        [out addObject:@{@"title": @"Video", @"value": videoName}];
     }
     return out;
 }
@@ -4603,6 +4794,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         case SectionRSSI:      return self.rssiRows;
         case SectionAxonLite:  return self.axonLiteRows;
         case SectionTypeBanner: return self.typebannerRows;
+        case SectionLiveWP:    return self.livewpRows;
         default: return @[];
     }
 }
@@ -4624,6 +4816,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         @{ @"title": @"Axon Lite",          @"icon": @"bell.badge.fill",                     @"color": [UIColor systemRedColor],    @"section": @(SectionAxonLite) },
         @{ @"title": @"TypeBanner",         @"icon": @"ellipsis.bubble.fill",                @"color": [UIColor systemTealColor],   @"section": @(SectionTypeBanner), @"experimental": @YES },
         @{ @"title": @"Cyanide Themer",     @"icon": @"paintpalette.fill",                   @"color": [UIColor systemPinkColor],   @"section": @(SectionThemer) },
+        @{ @"title": @"LiveWP",             @"icon": @"play.rectangle.fill",                 @"color": [UIColor systemPurpleColor], @"section": @(SectionLiveWP) },
         @{ @"title": @"Powercuff",          @"icon": @"bolt.slash.fill",                     @"color": [UIColor systemOrangeColor], @"section": @(SectionPowercuff) },
         @{ @"title": @"SpringBoard Tweaks", @"icon": @"apps.iphone",                         @"color": [UIColor systemIndigoColor], @"section": @(SectionDarkSwordTweaks) },
         @{ @"title": @"Home Layout Extras", @"icon": @"square.dashed.inset.filled",          @"color": [UIColor systemPurpleColor], @"section": @(SectionLayoutExtras) },
@@ -4782,7 +4975,23 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         return @"Pick a theme before running Cyanide Themer.\n\n"
                @"Custom themes can be a folder of PNG files named by bundle ID, such as com.apple.mobilesafari.png, or a binary plist mapping bundle IDs to PNG data. Import copies the theme into Cyanide's Documents/Themes folder. Theme Format Guide includes examples and plist exports.";
     }
+    if (s == SectionLiveWP) {
+        return @"Play a video as your dynamic wallpaper on both lock screen and home screen. Select a video file from your device, then toggle Enable and hit Apply Tweaks. The video will loop continuously as your wallpaper.";
+    }
     return nil;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    NSInteger sec = self.detailMode ? self.underlyingSection : indexPath.section;
+    NSArray *rows = [self rowsForSection:sec];
+    if (indexPath.row < (NSInteger)rows.count) {
+        NSDictionary *row = rows[indexPath.row];
+        if ([row[@"kind"] isEqualToString:@"preview"]) {
+            return 320;
+        }
+    }
+    return UITableViewAutomaticDimension;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section
@@ -5021,6 +5230,101 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     [self presentViewController:picker animated:YES completion:nil];
 }
 
+- (void)livewpPreviewToggle:(UIButton *)btn
+{
+    id player = objc_getAssociatedObject(btn, "livewp_btn_player");
+    if (!player) return;
+
+    // 用 NSInvocation 获取 rate（float，不是对象）
+    float rate = 0;
+    NSMethodSignature *sig = [player methodSignatureForSelector:@selector(rate)];
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    [inv setTarget:player]; [inv setSelector:@selector(rate)];
+    [inv invoke];
+    [inv getReturnValue:&rate];
+
+    if (rate > 0) {
+        [player performSelector:@selector(pause)];
+        [btn setImage:[UIImage systemImageNamed:@"play.fill"] forState:UIControlStateNormal];
+    } else {
+        [player performSelector:@selector(play)];
+        [btn setImage:[UIImage systemImageNamed:@"pause.fill"] forState:UIControlStateNormal];
+    }
+}
+
+- (void)showLiveWPVideoPicker
+{
+    // Create document picker for video files
+    NSArray *videoTypes = @[
+        [UTType typeWithFilenameExtension:@"mp4"],
+        [UTType typeWithFilenameExtension:@"mov"],
+        [UTType typeWithFilenameExtension:@"m4v"]
+    ];
+    
+    UIDocumentPickerViewController *picker =
+        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:videoTypes
+                                                                    asCopy:YES];
+    picker.delegate = self;
+    picker.allowsMultipleSelection = NO;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+
+
+- (BOOL)importLiveWPVideoAtURL:(NSURL *)url error:(NSError **)error
+{
+    NSFileManager *fm = [NSFileManager defaultManager];
+    
+    // Get file size
+    NSDictionary *attrs = [fm attributesOfItemAtPath:url.path error:error];
+    if (!attrs) return NO;
+    
+    unsigned long long fileSize = [attrs fileSize];
+    unsigned long long maxSize = 100 * 1024 * 1024; // 100MB
+    
+    // Warn if file is large
+    if (fileSize > maxSize) {
+        log_user("[LIVEWP] Warning: Video file is %.1f MB. Large files may impact performance.\n",
+                 fileSize / (1024.0 * 1024.0));
+    }
+    
+    // Create Documents/LiveWP directory
+    NSString *docsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *livewpDir = [docsPath stringByAppendingPathComponent:@"LiveWP"];
+    [fm createDirectoryAtPath:livewpDir withIntermediateDirectories:YES attributes:nil error:error];
+    if (error && *error) return NO;
+    
+    // Delete old video file if exists
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    NSString *oldAbsPath = settings_livewp_absolute_path();
+    if (oldAbsPath && oldAbsPath.length > 0) {
+        [fm removeItemAtPath:oldAbsPath error:nil];
+        log_user("[LIVEWP] Removed old video file: %s\n", oldAbsPath.lastPathComponent.UTF8String);
+    }
+    
+    // Copy new video file
+    NSString *fileName = url.lastPathComponent;
+    NSString *destPath = [livewpDir stringByAppendingPathComponent:fileName];
+    
+    // Remove existing file with same name
+    [fm removeItemAtPath:destPath error:nil];
+    
+    // Copy file
+    if (![fm copyItemAtPath:url.path toPath:destPath error:error]) {
+        return NO;
+    }
+    
+    // 保存相对路径（sandbox 容器 UUID 会变，绝对路径不持久）
+    NSString *relativePath = [NSString stringWithFormat:@"LiveWP/%@", fileName];
+    [d setObject:relativePath forKey:kSettingsLiveWPVideoPath];
+    [d synchronize];
+    
+    log_user("[LIVEWP] Imported video file: %s (%.1f MB)\n",
+             fileName.UTF8String, fileSize / (1024.0 * 1024.0));
+    
+    return YES;
+}
+
 - (BOOL)importThemerFolderAtURL:(NSURL *)url error:(NSError **)error
 {
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -5107,6 +5411,49 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
     NSError *err = nil;
     BOOL isDir = NO;
     [[NSFileManager defaultManager] fileExistsAtPath:url.path isDirectory:&isDir];
+    
+    // Check if this is a video file for LiveWP
+    NSString *ext = url.pathExtension.lowercaseString;
+    if ([ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"] || [ext isEqualToString:@"m4v"]) {
+        // Handle LiveWP video selection
+        BOOL ok = [self importLiveWPVideoAtURL:url error:&err];
+        if (scoped) [url stopAccessingSecurityScopedResource];
+        
+        if (!ok) {
+            NSString *msg = err.localizedDescription ?: @"Failed to import video file. Please choose a valid MP4, MOV, or M4V file.";
+            UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Video Import Failed"
+                                                                         message:msg
+                                                                  preferredStyle:UIAlertControllerStyleAlert];
+            [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:ac animated:YES completion:nil];
+            return;
+        }
+        
+        // Reload LiveWP section to show new video name
+        if (self.detailMode) {
+            [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
+                          withRowAnimation:UITableViewRowAnimationNone];
+        } else {
+            [self.tableView reloadData];
+        }
+
+        // 如果 LiveWP 已经在运行，热替换视频（复用旧 player 实例）
+        BOOL applied = settings_tweak_is_applied(kSettingsLiveWPEnabled);
+        log_user("[LIVEWP] picker: applied=%d rc_ready=%d\n", applied, g_springboard_rc_ready);
+        if (applied && g_springboard_rc_ready) {
+            dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                @synchronized (settings_rc_lock()) {
+                    if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
+                    NSString *absPath = livewp_absolute_path();
+                    log_user("[LIVEWP] picker: swap path=%s\n", absPath ? absPath.UTF8String : "(nil)");
+                    if (absPath) livewp_swap_video_in_session(absPath);
+                }
+            });
+        }
+        return;
+    }
+    
+    // Handle Themer import (existing logic)
     BOOL ok = isDir ? [self importThemerFolderAtURL:url error:&err]
                     : [self importThemerPlistAtURL:url error:&err];
     if (scoped) [url stopAccessingSecurityScopedResource];
@@ -5991,6 +6338,96 @@ void cyanide_present_contact(UIViewController *host)
         return cell;
     }
 
+    // Inline video preview cell
+    if ([kind isEqualToString:@"preview"]) {
+        UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"preview"];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+
+        NSString *videoPath = row[@"videoPath"];
+        if (videoPath && [[NSFileManager defaultManager] fileExistsAtPath:videoPath]) {
+            @try {
+                static void *avfHandle = NULL;
+                if (!avfHandle) avfHandle = dlopen("/System/Library/Frameworks/AVFoundation.framework/AVFoundation", RTLD_LAZY | RTLD_GLOBAL);
+
+                Class PlayerItemClass = NSClassFromString(@"AVPlayerItem");
+                Class PlayerClass = NSClassFromString(@"AVPlayer");
+                Class PlayerLayerClass = NSClassFromString(@"AVPlayerLayer");
+
+                if (PlayerItemClass && PlayerClass && PlayerLayerClass) {
+                    NSURL *url = [NSURL fileURLWithPath:videoPath];
+                    id item = [PlayerItemClass performSelector:@selector(playerItemWithURL:) withObject:url];
+                    id player = [PlayerClass performSelector:@selector(playerWithPlayerItem:) withObject:item];
+                    [player performSelector:@selector(setMuted:) withObject:@YES];
+
+                    // 循环
+                    NSMutableData *cmtime = [NSMutableData dataWithLength:24];
+                    int32_t ts = 1; uint32_t fl = 0x1;
+                    [cmtime replaceBytesInRange:NSMakeRange(8, 4) withBytes:&ts];
+                    [cmtime replaceBytesInRange:NSMakeRange(12, 4) withBytes:&fl];
+                    NSData *capturedCmtime = [cmtime copy];
+                    id capturedItem = item;
+                    [[NSNotificationCenter defaultCenter] addObserverForName:@"AVPlayerItemDidPlayToEndTimeNotification"
+                                                                      object:item queue:NSOperationQueue.mainQueue
+                                                                  usingBlock:^(NSNotification *note) {
+                        NSMethodSignature *sig = [capturedItem methodSignatureForSelector:@selector(seekToTime:)];
+                        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                        [inv setTarget:capturedItem]; [inv setSelector:@selector(seekToTime:)];
+                        [inv setArgument:(void *)[capturedCmtime bytes] atIndex:2];
+                        [inv invoke];
+                    }];
+
+                    // Player layer — 用一个 container view 包裹，方便自动布局
+                    UIView *videoContainer = [[UIView alloc] init];
+                    videoContainer.clipsToBounds = YES;
+                    videoContainer.translatesAutoresizingMaskIntoConstraints = NO;
+                    [cell.contentView addSubview:videoContainer];
+                    [NSLayoutConstraint activateConstraints:@[
+                        [videoContainer.leadingAnchor  constraintEqualToAnchor:cell.contentView.leadingAnchor],
+                        [videoContainer.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor],
+                        [videoContainer.topAnchor      constraintEqualToAnchor:cell.contentView.topAnchor],
+                        [videoContainer.bottomAnchor   constraintEqualToAnchor:cell.contentView.bottomAnchor],
+                    ]];
+
+                    id layer = [PlayerLayerClass performSelector:@selector(playerLayerWithPlayer:) withObject:player];
+                    [layer setValue:@"AVLayerVideoGravityResizeAspectFill" forKey:@"videoGravity"];
+                    [videoContainer.layer addSublayer:layer];
+                    // 布局后更新 layer frame
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [layer setFrame:videoContainer.bounds];
+                    });
+
+                    // 不自动播放，显示播放按钮（叠在视频上方）
+                    UIButton *playBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+                    [playBtn setImage:[UIImage systemImageNamed:@"play.fill"] forState:UIControlStateNormal];
+                    playBtn.tintColor = UIColor.whiteColor;
+                    playBtn.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.5];
+                    playBtn.layer.cornerRadius = 28;
+                    playBtn.translatesAutoresizingMaskIntoConstraints = NO;
+                    [cell.contentView addSubview:playBtn];
+
+                    [NSLayoutConstraint activateConstraints:@[
+                        [playBtn.centerXAnchor constraintEqualToAnchor:cell.contentView.centerXAnchor],
+                        [playBtn.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+                        [playBtn.widthAnchor constraintEqualToConstant:56],
+                        [playBtn.heightAnchor constraintEqualToConstant:56],
+                    ]];
+
+                    // 按钮 action
+                    objc_setAssociatedObject(playBtn, "livewp_btn_player", player, OBJC_ASSOCIATION_ASSIGN);
+                    objc_setAssociatedObject(playBtn, "livewp_btn_layer", layer, OBJC_ASSOCIATION_ASSIGN);
+                    [playBtn addTarget:self action:@selector(livewpPreviewToggle:) forControlEvents:UIControlEventTouchUpInside];
+
+                    objc_setAssociatedObject(cell, "livewp_preview_player", player, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    objc_setAssociatedObject(cell, "livewp_preview_btn", playBtn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                }
+            } @catch (NSException *e) {
+                log_user("[LIVEWP] preview error: %s\n", e.reason.UTF8String);
+            }
+        }
+
+        return cell;
+    }
+
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"toggle" forIndexPath:dequeuePath];
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     NSString *subtitle = row[@"subtitle"];
@@ -6548,6 +6985,16 @@ void cyanide_present_contact(UIViewController *host)
             [self presentThemerFormatGuide];
         } else if ([action isEqualToString:@"themer-clear"]) {
             [self clearSelectedTheme];
+        }
+        return;
+    }
+
+    if (indexPath.section == SectionLiveWP) {
+        NSDictionary *row = [self rowsForSection:indexPath.section][indexPath.row];
+        if (![row[@"kind"] isEqualToString:@"button"]) return;
+        NSString *action = row[@"action"];
+        if ([action isEqualToString:@"livewp-select-video"]) {
+            [self showLiveWPVideoPicker];
         }
         return;
     }

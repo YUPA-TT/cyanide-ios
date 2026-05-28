@@ -56,6 +56,9 @@ extern NSString * const kSettingsThemerThemeID;
 extern NSString * const kSettingsThemerCustomThemePath;
 extern NSString * const kSettingsThemerCustomThemeName;
 
+extern NSString * const kSettingsLiveWPEnabled;
+extern NSString * const kSettingsLiveWPVideoPath;
+
 extern NSString * const kSettingsExperimentalTweaksEnabled;
 
 extern NSString * const kSettingsLogUploadEnabled;

@@ -19,6 +19,7 @@ static const NSInteger kSecPowercuff    = 10;
 static const NSInteger kSecLayoutExtras = 12;
 static const NSInteger kSecNanoRegistry = 13;
 static const NSInteger kSecThemer       = 14;
+static const NSInteger kSecLiveWP       = 15;
 
 + (NSArray<Package *> *)allPackages
 {
@@ -151,6 +152,19 @@ static const NSInteger kSecThemer       = 14;
         themer.settingsSection = kSecThemer;
         themer.unstableWarning = @"⚠️ Beta: icon theming works but RemoteCall-backed changes may need re-applying after a respring or SpringBoard restart. Pick a theme in Settings > Cyanide Themer before running.";
 
+        Package *liveWP = [[Package alloc] initWithIdentifier:@"com.darksword.livewp"
+                                           name:@"LiveWP"
+                               shortDescription:@"Video wallpaper for lock screen and home screen"
+                                longDescription:@"Plays a user-selected video file as a dynamic wallpaper behind the lock screen and home screen. Uses AVPlayer in a low-level UIWindow (windowLevel -1) to display the video continuously.\n\nSupports MP4, MOV, and M4V formats. Select a video file in Settings > LiveWP, then enable the toggle and hit Apply Tweaks. The video loops automatically and persists until you disable the tweak or respring.\n\nApplied at Run; not persisted across respring. Large video files (>100MB) may impact performance."
+                                        version:version
+                                         author:@"d1y"
+                                       category:@"Other Tweaks"
+                                     symbolName:@"play.rectangle.fill"
+                                           kind:PackageInstallKindToggle
+                                     enabledKey:kSettingsLiveWPEnabled
+                                          isNew:YES];
+        liveWP.settingsSection = kSecLiveWP;
+
         Package *layoutExtras = [[Package alloc] initWithIdentifier:@"com.darksword.layoutextras"
                                            name:@"Home Layout Extras"
                                shortDescription:@"Extra home/dock padding and per-icon scaling"
@@ -262,6 +276,7 @@ static const NSInteger kSecThemer       = 14;
             nanoRegistry,
             typeBanner,
             themer,
+            liveWP,
         ];
     });
     return list;
