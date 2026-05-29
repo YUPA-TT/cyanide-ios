@@ -43,6 +43,8 @@ extern NSString * const kSettingsStatBarShowLabels;
 extern NSString * const kSettingsNSBarEnabled;
 extern NSString * const kSettingsNSBarPosition;
 
+extern NSString * const kSettingsNiceBarLiteEnabled;
+
 extern NSString * const kSettingsRSSIDisplayEnabled;
 extern NSString * const kSettingsRSSIDisplayWifi;
 extern NSString * const kSettingsRSSIDisplayCell;

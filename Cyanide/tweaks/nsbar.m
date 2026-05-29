@@ -22,7 +22,7 @@ static const double kNSBarFontPt = 11.5;
 static const double kNSBarWinLevel = 999999.0;
 static const double kNSBarMargin = 20.0;
 static const double kNSBarTopY = 0.0;      // 顶部留 1px 间距
-static const double kNSBarBottomY = 39.0;  // 更靠下（从 28.0 改为 44.0）
+static const double kNSBarBottomY = 38.0;  // 更靠下（从 28.0 改为 44.0）
 
 // Global state
 static uint64_t gNSBarApplyTick = 0;

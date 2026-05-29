@@ -14,12 +14,13 @@
 static const NSInteger kSecSBC          = 4;
 static const NSInteger kSecStatBar      = 5;
 static const NSInteger kSecNSBar        = 6;
-static const NSInteger kSecRSSI         = 7;
-static const NSInteger kSecPowercuff    = 10;
-static const NSInteger kSecLayoutExtras = 12;
-static const NSInteger kSecNanoRegistry = 13;
-static const NSInteger kSecThemer       = 14;
-static const NSInteger kSecLiveWP       = 15;
+static const NSInteger kSecNiceBarLite  = 7;
+static const NSInteger kSecRSSI         = 8;
+static const NSInteger kSecPowercuff    = 11;
+static const NSInteger kSecLayoutExtras = 13;
+static const NSInteger kSecNanoRegistry = 14;
+static const NSInteger kSecThemer       = 15;
+static const NSInteger kSecLiveWP       = 16;
 
 + (NSArray<Package *> *)allPackages
 {
@@ -68,6 +69,19 @@ static const NSInteger kSecLiveWP       = 15;
                                      enabledKey:kSettingsNSBarEnabled
                                           isNew:YES];
         nsBar.settingsSection = kSecNSBar;
+
+        Package *niceBarLite = [[Package alloc] initWithIdentifier:@"com.darksword.nicebarlite"
+                                           name:@"NiceBar Lite"
+                               shortDescription:@"NiceBar-style four-corner status labels"
+                                longDescription:@"A lightweight NiceBar port for Cyanide. It places plain text labels in the four status-bar corner slots: top-left, top-right, bottom-left, and bottom-right.\n\nEach slot can show custom text, device stats such as battery temperature, free RAM, battery percent, network speed, uptime, date or lunar date, a custom time format, or user-provided weather text. Labels do not draw a black pill background; they use status-bar-style text coloring and refresh about once per second while the RemoteCall session is alive."
+                                        version:version
+                                         author:@"d1y"
+                                       category:@"Other Tweaks"
+                                     symbolName:@"textformat.size"
+                                           kind:PackageInstallKindToggle
+                                     enabledKey:kSettingsNiceBarLiteEnabled
+                                          isNew:YES];
+        niceBarLite.settingsSection = kSecNiceBarLite;
 
         Package *signal = [[Package alloc] initWithIdentifier:@"com.darksword.rssidisplay"
                                            name:@"Signal Readouts"
@@ -194,6 +208,7 @@ static const NSInteger kSecLiveWP       = 15;
         list = @[
             statBar,
             nsBar,
+            niceBarLite,
             sbc,
             layoutExtras,
             powercuff,
