@@ -25,6 +25,8 @@ static uint64_t g_livewp_home_layer = 0;       // 主屏幕的 AVPlayerLayer
 static uint64_t g_livewp_lock_layer = 0;       // 锁屏的 AVPlayerLayer
 static uint64_t g_livewp_player_item = 0;
 static uint64_t g_livewp_looper = 0;
+static uint64_t g_livewp_home_window = 0;
+static uint64_t g_livewp_lock_window = 0;
 static bool g_livewp_configured = false;
 
 typedef struct { double x, y, w, h; } LiveWPRect;
@@ -151,6 +153,8 @@ void livewp_forget_remote_state(void)
     g_livewp_lock_layer = 0;
     g_livewp_player_item = 0;
     g_livewp_looper = 0;
+    g_livewp_home_window = 0;
+    g_livewp_lock_window = 0;
     g_livewp_configured = false;
 }
 
@@ -224,9 +228,10 @@ static bool livewp_create_player(NSString *videoPath)
     return true;
 }
 
-// 辅助：把 layer 插到指定 window 的 index 0，返回是否移动了
-static bool livewp_ensure_layer_in_window(uint64_t layer, uint64_t window)
+// 辅助：把 layer 插到指定 window 的 index 0，返回是否已附着成功。
+static bool livewp_ensure_layer_in_window(uint64_t layer, uint64_t window, bool *movedOut)
 {
+    if (movedOut) *movedOut = false;
     if (!r_is_objc_ptr(layer) || !r_is_objc_ptr(window)) return false;
 
     uint64_t winLayer = r_msg2_main(window, "layer", 0, 0, 0, 0);
@@ -243,13 +248,30 @@ static bool livewp_ensure_layer_in_window(uint64_t layer, uint64_t window)
         if (r_is_objc_ptr(curSuper))
             r_msg2_main(layer, "removeFromSuperlayer", 0, 0, 0, 0);
         r_msg2_main(winLayer, "insertSublayer:atIndex:", layer, 0, 0, 0);
-        return true;
+        if (movedOut) *movedOut = true;
     }
-    return false;
+    return true;
 }
 
 static bool livewp_attach_and_play(void)
 {
+    bool homeMoved = false;
+    bool lockMoved = false;
+    bool homeOK = livewp_ensure_layer_in_window(g_livewp_home_layer,
+                                                g_livewp_home_window,
+                                                &homeMoved);
+    bool lockOK = livewp_ensure_layer_in_window(g_livewp_lock_layer,
+                                                g_livewp_lock_window,
+                                                &lockMoved);
+    if (homeOK || lockOK) {
+        r_msg2_main(g_livewp_player, "play", 0, 0, 0, 0);
+        if (homeMoved || lockMoved) {
+            log_user("[LIVEWP] repair: reused cached windows homeMoved=%d lockMoved=%d\n",
+                     homeMoved, lockMoved);
+        }
+        return true;
+    }
+
     uint64_t app = r_msg2_main(r_class("UIApplication"), "sharedApplication", 0, 0, 0, 0);
     if (!r_is_objc_ptr(app)) return false;
 
@@ -290,17 +312,20 @@ static bool livewp_attach_and_play(void)
     }
 
     // 把各自的 layer 插到各自的 window
-    bool homeMoved = false, lockMoved = false;
-    if (r_is_objc_ptr(homeWin))
-        homeMoved = livewp_ensure_layer_in_window(g_livewp_home_layer, homeWin);
-    if (r_is_objc_ptr(lockWin))
-        lockMoved = livewp_ensure_layer_in_window(g_livewp_lock_layer, lockWin);
+    if (r_is_objc_ptr(homeWin)) {
+        homeOK = livewp_ensure_layer_in_window(g_livewp_home_layer, homeWin, &homeMoved);
+        if (homeOK) g_livewp_home_window = homeWin;
+    }
+    if (r_is_objc_ptr(lockWin)) {
+        lockOK = livewp_ensure_layer_in_window(g_livewp_lock_layer, lockWin, &lockMoved);
+        if (lockOK) g_livewp_lock_window = lockWin;
+    }
 
     r_msg2_main(g_livewp_player, "play", 0, 0, 0, 0);
 
     log_user("[LIVEWP] D: home=0x%llx(%d) lock=0x%llx(%d) wCount=%llu\n",
              homeWin, homeMoved, lockWin, lockMoved, wCount);
-    return r_is_objc_ptr(homeWin) || r_is_objc_ptr(lockWin);
+    return homeOK || lockOK;
 }
 
 static void livewp_cleanup(void)
@@ -310,4 +335,6 @@ static void livewp_cleanup(void)
     g_livewp_home_layer = 0;
     g_livewp_lock_layer = 0;
     g_livewp_looper = 0;
+    g_livewp_home_window = 0;
+    g_livewp_lock_window = 0;
 }

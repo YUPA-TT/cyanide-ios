@@ -327,8 +327,11 @@ static const NSInteger kNanoUIRowMax = 999;
 static const useconds_t kStatBarLiveIntervalUS = 1000000;
 static const useconds_t kStatBarLiveBackgroundIntervalUS = 1000000;
 static const NSUInteger kStatBarLiveMaxTicks = 43200;
+static const useconds_t kNSBarLiveIntervalUS = 500000;
+static const useconds_t kNSBarLiveBackgroundIntervalUS = 1000000;
 static const useconds_t kNiceBarLiteLiveIntervalUS = 500000;
 static const useconds_t kNiceBarLiteLiveBackgroundIntervalUS = 1000000;
+static const useconds_t kNiceBarLiteNetworkIntervalUS = 500000;
 static const NSUInteger kNiceBarLiteLiveMaxTicks = 43200;
 static const NSTimeInterval kNiceBarLiteWeatherRefreshInterval = 900.0;
 static const int64_t kLiveBackgroundTaskGraceSeconds = 10;
@@ -353,8 +356,8 @@ static const NSUInteger kThemerLiveMaxTicks = 86400;
 static const NSUInteger kThemerLegacyLiveMaxTicks = 1;
 static const useconds_t kThemerRepairInitialDelayUS = 900000;
 static const useconds_t kThemerRepairIntervalUS = 450000;
-static const useconds_t kLiveWPLiveIntervalUS = 1000000;
-static const useconds_t kLiveWPLiveBackgroundIntervalUS = 1500000;
+static const useconds_t kLiveWPLiveIntervalUS = 5000000;
+static const useconds_t kLiveWPLiveBackgroundIntervalUS = 15000000;
 static const NSUInteger kLiveWPLiveMaxTicks = 43200;
 static NSString * const kSettingsRemoteCallStateDidChangeNotification = @"SettingsRemoteCallStateDidChangeNotification";
 NSString * const kSettingsActionsDidCompleteNotification = @"SettingsActionsDidCompleteNotification";
@@ -2656,8 +2659,8 @@ static void settings_start_nsbar_live_loop(void)
         BOOL pausedForSleep = NO;
 
         printf("[SETTINGS] NSBar live loop started interval=%uus background=%uus max=%lu\n",
-               kStatBarLiveIntervalUS,
-               kStatBarLiveBackgroundIntervalUS,
+               kNSBarLiveIntervalUS,
+               kNSBarLiveBackgroundIntervalUS,
                (unsigned long)kStatBarLiveMaxTicks);
         cyanide_upload_log_milestone(@"nsbar-live-started");
 
@@ -2666,8 +2669,8 @@ static void settings_start_nsbar_live_loop(void)
                    !settings_cleanup_in_progress() &&
                    !g_nsbar_live_stop_requested &&
                    tick < kStatBarLiveMaxTicks) {
-                useconds_t intervalUS = settings_live_interval(kStatBarLiveIntervalUS,
-                                                               kStatBarLiveBackgroundIntervalUS);
+                useconds_t intervalUS = settings_live_interval(kNSBarLiveIntervalUS,
+                                                               kNSBarLiveBackgroundIntervalUS);
                 if (!settings_statbar_screen_awake()) {
                     if (!pausedForSleep) {
                         pausedForSleep = YES;
@@ -2719,8 +2722,8 @@ static void settings_start_nsbar_live_loop(void)
                 uint64_t nowUS = settings_now_us();
                 uint64_t elapsedUS = (tickStartUS != 0 && nowUS >= tickStartUS) ? (nowUS - tickStartUS) : 0;
                 if (nextTickUS != 0) {
-                    intervalUS = settings_live_interval(kStatBarLiveIntervalUS,
-                                                        kStatBarLiveBackgroundIntervalUS);
+                    intervalUS = settings_live_interval(kNSBarLiveIntervalUS,
+                                                        kNSBarLiveBackgroundIntervalUS);
                     nextTickUS += intervalUS;
                     if (nowUS < nextTickUS) {
                         uint64_t sleepUS = nextTickUS - nowUS;
@@ -2747,8 +2750,8 @@ static void settings_start_nsbar_live_loop(void)
                     }
                 } else {
                     settings_live_loop_sleep_interruptible(0,
-                                                           settings_live_interval(kStatBarLiveIntervalUS,
-                                                                                  kStatBarLiveBackgroundIntervalUS),
+                                                           settings_live_interval(kNSBarLiveIntervalUS,
+                                                                                  kNSBarLiveBackgroundIntervalUS),
                                                            &g_nsbar_live_stop_requested);
                 }
             }
@@ -2888,7 +2891,7 @@ static void settings_start_nicebarlite_live_loop(void)
                 } else if (networkMask != 0 &&
                            (lastNetworkTickUS == 0 ||
                             (nowForMaskUS >= lastNetworkTickUS &&
-                             nowForMaskUS - lastNetworkTickUS >= 1000000ULL))) {
+                             nowForMaskUS - lastNetworkTickUS >= (uint64_t)kNiceBarLiteNetworkIntervalUS))) {
                     updateMask = networkMask;
                     updateReason = "network";
                     lastNetworkTickUS = nowForMaskUS;
@@ -4714,7 +4717,7 @@ void settings_run_actions(void)
                     }
 
                     if (runNSBar) {
-                        settings_progress(&step, total, "Starting NSBar network speed overlay and 1s feed");
+                        settings_progress(&step, total, "Starting NSBar network speed overlay and live feed");
                         NSBarPosition position = (NSBarPosition)[d integerForKey:kSettingsNSBarPosition];
                         bool ok = nsbar_apply_in_session(position);
                         settings_mark_tweak_applied(kSettingsNSBarEnabled,

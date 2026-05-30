@@ -20,8 +20,8 @@
 static const uint64_t kNSBarOverlayTag = 99422;
 static const double kNSBarWinH = 18.0;
 static const double kNSBarFontPt = 11.5;
-// Was 999999.0; keep it near status bar level so system overlays can cover it.
-static const double kNSBarWinLevel = 1001.0;
+// Was 999999.0/1001.0; keep it below the system status bar so scroll-to-top taps pass through.
+static const double kNSBarWinLevel = 999.0;
 static const double kNSBarMargin = 20.0;
 static const double kNSBarTopY = 0.0;      // 顶部留 1px 间距
 static const double kNSBarBottomY = 38.0;  // 更靠下（从 28.0 改为 44.0）
@@ -189,6 +189,35 @@ static bool r_send_rect_main(uint64_t obj, const char *selName,
     return true;
 }
 
+static void nsbar_make_label_click_through(uint64_t label)
+{
+    if (!r_is_objc_ptr(label)) return;
+    r_msg2_main(label, "setUserInteractionEnabled:", 0, 0, 0, 0);
+    r_msg2_main(label, "setMultipleTouchEnabled:", 0, 0, 0, 0);
+    r_msg2_main(label, "setExclusiveTouch:", 0, 0, 0, 0);
+}
+
+static void nsbar_make_window_click_through(uint64_t win)
+{
+    if (!r_is_objc_ptr(win)) return;
+    r_msg2_main(win, "setUserInteractionEnabled:", 0, 0, 0, 0);
+    r_msg2_main(win, "setMultipleTouchEnabled:", 0, 0, 0, 0);
+    r_msg2_main(win, "setExclusiveTouch:", 0, 0, 0, 0);
+
+    const char *selectors[] = {
+        "_setWindowIgnoresHitTest:",
+        "setWindowIgnoresHitTest:",
+        "_setIgnoresHitTesting:",
+        "setIgnoresHitTesting:",
+        "setIgnoresHitTest:",
+    };
+    for (size_t i = 0; i < sizeof(selectors) / sizeof(selectors[0]); i++) {
+        if (r_responds_main(win, selectors[i])) {
+            r_msg2_main(win, selectors[i], 1, 0, 0, 0);
+        }
+    }
+}
+
 static uint64_t nsbar_overlay_font(void)
 {
     uint64_t UIFont = r_class("UIFont");
@@ -213,6 +242,7 @@ static uint64_t nsbar_overlay_font(void)
 static void nsbar_apply_overlay_style(uint64_t label)
 {
     if (!r_is_objc_ptr(label)) return;
+    nsbar_make_label_click_through(label);
 
     uint64_t font = nsbar_overlay_font();
     if (r_is_objc_ptr(font)) {
@@ -340,7 +370,8 @@ static bool nsbar_install_overlay(NSString *text, NSBarPosition position)
 
     // Fast path: update existing overlay
     if (r_is_objc_ptr(gNSBarOverlayWindow) && r_is_objc_ptr(gNSBarOverlayLabel)) {
-        printf("[NSBAR] fast path: current position=%d last position=%d\n", position, gNSBarLastPosition);
+        if (nsbar_should_log_tick())
+            printf("[NSBAR] fast path: current position=%d last position=%d\n", position, gNSBarLastPosition);
         bool ok = nsbar_set_text_fast(gNSBarOverlayLabel, textObj);
         nsbar_release_remote_obj(textObj);
         if (ok) {
@@ -389,6 +420,7 @@ static bool nsbar_install_overlay(NSString *text, NSBarPosition position)
             gNSBarOverlayLabel = cachedLabel;
             gNSBarLastPosition = position;
             nsbar_set_text_fast(cachedLabel, textObj);
+            nsbar_make_window_click_through(cachedWin);
             nsbar_apply_overlay_style(cachedLabel);
             nsbar_apply_overlay_layout(cachedWin, cachedLabel, position, text);
             r_msg2_main(cachedWin, "setHidden:", 0, 0, 0, 0);
@@ -483,6 +515,7 @@ static bool nsbar_install_overlay(NSString *text, NSBarPosition position)
     }
 
     nsbar_apply_overlay_style(label);
+    nsbar_make_window_click_through(win);
     nsbar_apply_overlay_layout(win, label, position, text);
     r_msg2_main(win, "addSubview:", label, 0, 0, 0);
     r_msg2_main(win, "setHidden:", 0, 0, 0, 0);

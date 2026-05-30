@@ -44,8 +44,8 @@ static const double kNBLFallbackScreenWidth = 390.0;
 static const double kNBLWinH = 18.0;
 static const double kNBLFontPt = 11.0;
 static const double kNBLTopFontPt = 8.8;
-// Was 999999.0; keep it near status bar level so system overlays can cover it.
-static const double kNBLWindowLevel = 1001.0;
+// Was 999999.0/1001.0; keep it below the system status bar so scroll-to-top taps pass through.
+static const double kNBLWindowLevel = 999.0;
 static const double kNBLSideMargin = 20.0;
 static const double kNBLTopSideMargin = 29.0;
 static const double kNBLTopY = 0.0;
@@ -415,6 +415,35 @@ static bool nbl_send_rect_main(uint64_t obj, const char *selName,
     return true;
 }
 
+static void nbl_make_label_click_through(uint64_t label)
+{
+    if (!r_is_objc_ptr(label)) return;
+    r_msg2_main(label, "setUserInteractionEnabled:", 0, 0, 0, 0);
+    r_msg2_main(label, "setMultipleTouchEnabled:", 0, 0, 0, 0);
+    r_msg2_main(label, "setExclusiveTouch:", 0, 0, 0, 0);
+}
+
+static void nbl_make_window_click_through(uint64_t win)
+{
+    if (!r_is_objc_ptr(win)) return;
+    r_msg2_main(win, "setUserInteractionEnabled:", 0, 0, 0, 0);
+    r_msg2_main(win, "setMultipleTouchEnabled:", 0, 0, 0, 0);
+    r_msg2_main(win, "setExclusiveTouch:", 0, 0, 0, 0);
+
+    const char *selectors[] = {
+        "_setWindowIgnoresHitTest:",
+        "setWindowIgnoresHitTest:",
+        "_setIgnoresHitTesting:",
+        "setIgnoresHitTesting:",
+        "setIgnoresHitTest:",
+    };
+    for (size_t i = 0; i < sizeof(selectors) / sizeof(selectors[0]); i++) {
+        if (r_responds_main(win, selectors[i])) {
+            r_msg2_main(win, selectors[i], 1, 0, 0, 0);
+        }
+    }
+}
+
 static uint64_t nbl_nsstring_utf8_fast(const char *cstr)
 {
     if (!cstr) cstr = "";
@@ -475,6 +504,7 @@ static double nbl_side_margin_for_slot(NiceBarLiteSlot slot)
 static void nbl_apply_label_style(uint64_t label, NiceBarLiteSlot slot)
 {
     if (!r_is_objc_ptr(label)) return;
+    nbl_make_label_click_through(label);
 
     if (!r_is_objc_ptr(gNBLUIFontClass)) gNBLUIFontClass = r_class("UIFont");
     if (r_is_objc_ptr(gNBLUIFontClass)) {
@@ -598,6 +628,7 @@ static bool nbl_create_or_fetch_window(void)
                                    app, assocKey, 0, 0, 0, 0, 0, 0);
     if (r_is_objc_ptr(cached)) {
         gNBLWindow = cached;
+        nbl_make_window_click_through(gNBLWindow);
         return true;
     }
 
@@ -625,7 +656,7 @@ static bool nbl_create_or_fetch_window(void)
         if (r_is_objc_ptr(gNBLClearColor)) r_msg2_main(win, "setBackgroundColor:", gNBLClearColor, 0, 0, 0);
     }
     nbl_send_double_main(win, "setWindowLevel:", kNBLWindowLevel);
-    r_msg2_main(win, "setUserInteractionEnabled:", 0, 0, 0, 0);
+    nbl_make_window_click_through(win);
 
     r_dlsym_call(R_TIMEOUT, "objc_setAssociatedObject", app, assocKey, win, 1, 0, 0, 0, 0);
     gNBLWindow = win;
@@ -643,6 +674,7 @@ static uint64_t nbl_ensure_label(NiceBarLiteSlot slot)
         gNBLLabels[slot] = existing;
         gNBLHasLastLayout[slot] = NO;
         gNBLLastText[slot] = nil;
+        nbl_apply_label_style(existing, slot);
         return existing;
     }
 
