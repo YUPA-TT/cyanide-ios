@@ -5779,29 +5779,42 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     button.layer.borderColor = UIColor.separatorColor.CGColor;
     [button addTarget:self action:@selector(nicebarSlotButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
 
-    NSString *title = [NSString stringWithFormat:@"%@\n%@ · %@",
+    NSString *title = [NSString stringWithFormat:@"%@\n%@\n%@",
                        settings_nicebar_slot_name(slot),
                        settings_nicebar_kind_name(kind),
                        [self nicebarSubtitleForSlot:slot]];
     NSMutableParagraphStyle *paragraph = [[NSMutableParagraphStyle alloc] init];
-    paragraph.lineSpacing = 2.0;
+    paragraph.lineSpacing = 1.5;
     NSDictionary *attrs = @{
-        NSFontAttributeName: [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold],
+        NSFontAttributeName: [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold],
         NSForegroundColorAttributeName: UIColor.labelColor,
         NSParagraphStyleAttributeName: paragraph,
     };
     NSMutableAttributedString *attributed = [[NSMutableAttributedString alloc] initWithString:title
                                                                                    attributes:attrs];
-    NSRange newline = [title rangeOfString:@"\n"];
-    if (newline.location != NSNotFound) {
+    NSRange firstNewline = [title rangeOfString:@"\n"];
+    NSRange secondNewline = [title rangeOfString:@"\n"
+                                         options:0
+                                           range:NSMakeRange(firstNewline.location != NSNotFound ? firstNewline.location + 1 : 0,
+                                                            firstNewline.location != NSNotFound ? title.length - firstNewline.location - 1 : title.length)];
+    if (firstNewline.location != NSNotFound) {
         [attributed addAttributes:@{
-            NSFontAttributeName: [UIFont systemFontOfSize:11.0 weight:UIFontWeightRegular],
+            NSFontAttributeName: [UIFont systemFontOfSize:10.5 weight:UIFontWeightRegular],
             NSForegroundColorAttributeName: UIColor.secondaryLabelColor,
-        } range:NSMakeRange(newline.location + 1, title.length - newline.location - 1)];
+        } range:NSMakeRange(firstNewline.location + 1,
+                            (secondNewline.location != NSNotFound ? secondNewline.location : title.length) - firstNewline.location - 1)];
+    }
+    if (secondNewline.location != NSNotFound) {
+        [attributed addAttributes:@{
+            NSFontAttributeName: [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold],
+            NSForegroundColorAttributeName: UIColor.secondaryLabelColor,
+        } range:NSMakeRange(secondNewline.location + 1, title.length - secondNewline.location - 1)];
     }
     [button setAttributedTitle:attributed forState:UIControlStateNormal];
-    button.titleLabel.numberOfLines = 2;
+    button.titleLabel.numberOfLines = 3;
     button.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    button.titleLabel.adjustsFontSizeToFitWidth = YES;
+    button.titleLabel.minimumScaleFactor = 0.82;
     return button;
 }
 
@@ -5848,7 +5861,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         [grid.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
         [grid.topAnchor constraintEqualToAnchor:m.topAnchor constant:6.0],
         [grid.bottomAnchor constraintEqualToAnchor:m.bottomAnchor constant:-6.0],
-        [grid.heightAnchor constraintEqualToConstant:132.0],
+        [grid.heightAnchor constraintEqualToConstant:164.0],
     ]];
     (void)indexPath;
     return cell;
