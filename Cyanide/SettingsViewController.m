@@ -218,6 +218,30 @@ static NSString *settings_livewp_absolute_path(void) {
     return [docs stringByAppendingPathComponent:rel];
 }
 
+static NSString *settings_livewp_file_size_text(unsigned long long bytes)
+{
+    double value = (double)bytes;
+    NSArray<NSString *> *units = @[@"B", @"KB", @"MB", @"GB"];
+    NSUInteger unit = 0;
+    while (value >= 1024.0 && unit + 1 < units.count) {
+        value /= 1024.0;
+        unit++;
+    }
+    if (unit == 0) return [NSString stringWithFormat:@"%llu %@", bytes, units[unit]];
+    return [NSString stringWithFormat:@"%.1f %@", value, units[unit]];
+}
+
+static NSString *settings_livewp_video_detail(NSString *absPath)
+{
+    if (absPath.length == 0) return @"Select an MP4, MOV, or M4V file.";
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:absPath error:nil];
+    NSString *ext = absPath.pathExtension.uppercaseString.length ? absPath.pathExtension.uppercaseString : @"VIDEO";
+    if (!attrs) return ext;
+    return [NSString stringWithFormat:@"%@ · %@",
+            ext,
+            settings_livewp_file_size_text([attrs fileSize])];
+}
+
 // Master gate for experimental tweaks. When NO (default), packages that opt
 // into the experimental category are hidden from the Installer and the
 // Settings bundle list, and any currently-enabled experimental tweak is
@@ -6132,27 +6156,19 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
 - (NSArray<NSDictionary *> *)livewpRows
 {
     NSString *absPath = settings_livewp_absolute_path();
-    NSString *videoName = @"No video selected";
     BOOL hasVideo = (absPath && absPath.length > 0);
-    if (hasVideo) {
-        videoName = [absPath lastPathComponent];
-    }
+    NSString *videoName = hasVideo ? [absPath lastPathComponent] : @"No video selected";
+    NSString *detail = settings_livewp_video_detail(absPath);
 
-    NSMutableArray *rows = [NSMutableArray arrayWithArray:@[
-        @{ @"kind": @"info",
-           @"title": @"Video File",
-           @"value": videoName },
+    return @[
+        @{ @"kind": @"preview",
+           @"title": videoName,
+           @"subtitle": detail,
+           @"videoPath": absPath ?: @"" },
         @{ @"kind": @"button",
-           @"title": @"Select Video File",
-           @"subtitle": @"Choose a video file to use as live wallpaper",
+           @"title": hasVideo ? @"Replace Video File" : @"Select Video File",
            @"action": @"livewp-select-video" },
-    ]];
-
-    if (hasVideo) {
-        [rows addObject:@{ @"kind": @"preview", @"videoPath": absPath }];
-    }
-
-    return rows;
+    ];
 }
 
 - (NSArray<NSDictionary *> *)themerRows
@@ -6722,6 +6738,30 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         [player performSelector:@selector(play)];
         [btn setImage:[UIImage systemImageNamed:@"pause.fill"] forState:UIControlStateNormal];
     }
+}
+
+- (void)livewpPreviewReplay:(UIButton *)btn
+{
+    id item = objc_getAssociatedObject(btn, "livewp_btn_item");
+    id player = objc_getAssociatedObject(btn, "livewp_btn_player");
+    UIButton *playBtn = objc_getAssociatedObject(btn, "livewp_btn_play");
+    if (!item || !player) return;
+
+    NSMutableData *zeroTime = [NSMutableData dataWithLength:24];
+    int32_t timescale = 1;
+    uint32_t flags = 0x1;
+    [zeroTime replaceBytesInRange:NSMakeRange(8, 4) withBytes:&timescale];
+    [zeroTime replaceBytesInRange:NSMakeRange(12, 4) withBytes:&flags];
+
+    NSMethodSignature *sig = [item methodSignatureForSelector:@selector(seekToTime:)];
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    [inv setTarget:item];
+    [inv setSelector:@selector(seekToTime:)];
+    [inv setArgument:(void *)zeroTime.bytes atIndex:2];
+    [inv invoke];
+
+    [player performSelector:@selector(play)];
+    [playBtn setImage:[UIImage systemImageNamed:@"pause.fill"] forState:UIControlStateNormal];
 }
 
 - (void)showLiveWPVideoPicker
@@ -7661,6 +7701,39 @@ void cyanide_present_contact(UIViewController *host)
                             indexPath.section == SectionOTA ||
                             indexPath.section == SectionThemer;
         NSString *action = row[@"action"];
+        if (indexPath.section == SectionLiveWP &&
+            [action isEqualToString:@"livewp-select-video"]) {
+            UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"livewp-picker"];
+            cell.selectionStyle = rowSupported ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
+            cell.backgroundColor = UIColor.clearColor;
+            cell.contentView.backgroundColor = UIColor.clearColor;
+            cell.separatorInset = UIEdgeInsetsMake(0, CGRectGetWidth(tableView.bounds), 0, 0);
+
+            UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+            button.translatesAutoresizingMaskIntoConstraints = NO;
+            button.enabled = rowSupported;
+            [button setTitle:row[@"title"] forState:UIControlStateNormal];
+            button.titleLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+            [button setTitleColor:rowSupported ? self.view.tintColor : UIColor.tertiaryLabelColor
+                          forState:UIControlStateNormal];
+            button.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+            button.layer.cornerRadius = 24.0;
+            button.layer.cornerCurve = kCACornerCurveContinuous;
+            button.layer.borderWidth = 1.0;
+            button.layer.borderColor = [UIColor.separatorColor colorWithAlphaComponent:0.22].CGColor;
+            [button addTarget:self action:@selector(showLiveWPVideoPicker) forControlEvents:UIControlEventTouchUpInside];
+            [cell.contentView addSubview:button];
+
+            UILayoutGuide *m = cell.contentView.layoutMarginsGuide;
+            [NSLayoutConstraint activateConstraints:@[
+                [button.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
+                [button.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+                [button.topAnchor constraintEqualToAnchor:m.topAnchor constant:6.0],
+                [button.bottomAnchor constraintEqualToAnchor:m.bottomAnchor constant:-6.0],
+                [button.heightAnchor constraintEqualToConstant:50.0],
+            ]];
+            return cell;
+        }
         if (indexPath.section == SectionNanoRegistry &&
             [action isEqualToString:@"nano-load"]) {
             rowSupported = settings_nano_load_override_enabled();
@@ -7822,9 +7895,126 @@ void cyanide_present_contact(UIViewController *host)
     if ([kind isEqualToString:@"preview"]) {
         UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"preview"];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.backgroundColor = UIColor.clearColor;
+        cell.contentView.backgroundColor = UIColor.clearColor;
 
         NSString *videoPath = row[@"videoPath"];
-        if (videoPath && [[NSFileManager defaultManager] fileExistsAtPath:videoPath]) {
+        BOOL hasVideo = videoPath.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:videoPath];
+
+        UIView *phoneFrame = [[UIView alloc] init];
+        phoneFrame.translatesAutoresizingMaskIntoConstraints = NO;
+        phoneFrame.backgroundColor = UIColor.blackColor;
+        phoneFrame.clipsToBounds = YES;
+        phoneFrame.layer.cornerRadius = 24.0;
+        phoneFrame.layer.borderWidth = 1.0;
+        phoneFrame.layer.borderColor = [UIColor.separatorColor colorWithAlphaComponent:0.35].CGColor;
+        UITapGestureRecognizer *previewTap =
+            [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(showLiveWPVideoPicker)];
+        [phoneFrame addGestureRecognizer:previewTap];
+        phoneFrame.userInteractionEnabled = YES;
+        [cell.contentView addSubview:phoneFrame];
+
+        UIStackView *sideStack = [[UIStackView alloc] init];
+        sideStack.translatesAutoresizingMaskIntoConstraints = NO;
+        sideStack.axis = UILayoutConstraintAxisVertical;
+        sideStack.alignment = UIStackViewAlignmentFill;
+        sideStack.spacing = 10.0;
+        [cell.contentView addSubview:sideStack];
+
+        UILabel *titleLabel = [[UILabel alloc] init];
+        titleLabel.text = row[@"title"];
+        titleLabel.textColor = UIColor.labelColor;
+        titleLabel.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightSemibold];
+        titleLabel.numberOfLines = 2;
+        titleLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        [sideStack addArrangedSubview:titleLabel];
+
+        UILabel *detailLabel = [[UILabel alloc] init];
+        detailLabel.text = row[@"subtitle"];
+        detailLabel.textColor = UIColor.secondaryLabelColor;
+        detailLabel.font = [UIFont systemFontOfSize:13.0];
+        detailLabel.numberOfLines = 0;
+        [sideStack addArrangedSubview:detailLabel];
+
+        UILabel *modeLabel = [[UILabel alloc] init];
+        modeLabel.text = hasVideo ? @"Preview only. Enable LiveWP and Apply Tweaks to use it on-device." : @"Pick a video first, then enable LiveWP and apply it.";
+        modeLabel.textColor = UIColor.tertiaryLabelColor;
+        modeLabel.font = [UIFont systemFontOfSize:12.0];
+        modeLabel.numberOfLines = 0;
+        [sideStack addArrangedSubview:modeLabel];
+
+        UIStackView *controlStack = [[UIStackView alloc] init];
+        controlStack.axis = UILayoutConstraintAxisHorizontal;
+        controlStack.alignment = UIStackViewAlignmentCenter;
+        controlStack.spacing = 10.0;
+        [sideStack addArrangedSubview:controlStack];
+
+        UIButton *playBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+        [playBtn setImage:[UIImage systemImageNamed:@"play.fill"] forState:UIControlStateNormal];
+        playBtn.tintColor = UIColor.whiteColor;
+        playBtn.backgroundColor = hasVideo ? self.view.tintColor : UIColor.tertiaryLabelColor;
+        playBtn.layer.cornerRadius = 20.0;
+        playBtn.translatesAutoresizingMaskIntoConstraints = NO;
+        playBtn.enabled = hasVideo;
+        [controlStack addArrangedSubview:playBtn];
+
+        UIButton *replayBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+        [replayBtn setImage:[UIImage systemImageNamed:@"gobackward"] forState:UIControlStateNormal];
+        replayBtn.tintColor = self.view.tintColor;
+        replayBtn.backgroundColor = UIColor.secondarySystemFillColor;
+        replayBtn.layer.cornerRadius = 20.0;
+        replayBtn.translatesAutoresizingMaskIntoConstraints = NO;
+        replayBtn.enabled = hasVideo;
+        [controlStack addArrangedSubview:replayBtn];
+
+        UILayoutGuide *m = cell.contentView.layoutMarginsGuide;
+        [NSLayoutConstraint activateConstraints:@[
+            [phoneFrame.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
+            [phoneFrame.topAnchor constraintEqualToAnchor:m.topAnchor constant:8.0],
+            [phoneFrame.bottomAnchor constraintEqualToAnchor:m.bottomAnchor constant:-8.0],
+            [phoneFrame.widthAnchor constraintEqualToConstant:154.0],
+
+            [sideStack.leadingAnchor constraintEqualToAnchor:phoneFrame.trailingAnchor constant:16.0],
+            [sideStack.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+            [sideStack.centerYAnchor constraintEqualToAnchor:phoneFrame.centerYAnchor],
+            [sideStack.topAnchor constraintGreaterThanOrEqualToAnchor:m.topAnchor constant:12.0],
+            [sideStack.bottomAnchor constraintLessThanOrEqualToAnchor:m.bottomAnchor constant:-12.0],
+
+            [playBtn.widthAnchor constraintEqualToConstant:40.0],
+            [playBtn.heightAnchor constraintEqualToConstant:40.0],
+            [replayBtn.widthAnchor constraintEqualToConstant:40.0],
+            [replayBtn.heightAnchor constraintEqualToConstant:40.0],
+        ]];
+
+        if (!hasVideo) {
+            UIImageView *placeholderIcon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"video.slash"]];
+            placeholderIcon.translatesAutoresizingMaskIntoConstraints = NO;
+            placeholderIcon.tintColor = UIColor.tertiaryLabelColor;
+            placeholderIcon.contentMode = UIViewContentModeScaleAspectFit;
+            [phoneFrame addSubview:placeholderIcon];
+
+            UILabel *placeholder = [[UILabel alloc] init];
+            placeholder.translatesAutoresizingMaskIntoConstraints = NO;
+            placeholder.text = @"No Preview";
+            placeholder.textColor = UIColor.tertiaryLabelColor;
+            placeholder.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
+            placeholder.textAlignment = NSTextAlignmentCenter;
+            [phoneFrame addSubview:placeholder];
+
+            [NSLayoutConstraint activateConstraints:@[
+                [placeholderIcon.centerXAnchor constraintEqualToAnchor:phoneFrame.centerXAnchor],
+                [placeholderIcon.centerYAnchor constraintEqualToAnchor:phoneFrame.centerYAnchor constant:-12.0],
+                [placeholderIcon.widthAnchor constraintEqualToConstant:34.0],
+                [placeholderIcon.heightAnchor constraintEqualToConstant:34.0],
+                [placeholder.leadingAnchor constraintEqualToAnchor:phoneFrame.leadingAnchor constant:8.0],
+                [placeholder.trailingAnchor constraintEqualToAnchor:phoneFrame.trailingAnchor constant:-8.0],
+                [placeholder.topAnchor constraintEqualToAnchor:placeholderIcon.bottomAnchor constant:8.0],
+            ]];
+
+            return cell;
+        }
+
+        if (hasVideo) {
             @try {
                 static void *avfHandle = NULL;
                 if (!avfHandle) avfHandle = dlopen("/System/Library/Frameworks/AVFoundation.framework/AVFoundation", RTLD_LAZY | RTLD_GLOBAL);
@@ -7837,7 +8027,7 @@ void cyanide_present_contact(UIViewController *host)
                     NSURL *url = [NSURL fileURLWithPath:videoPath];
                     id item = [PlayerItemClass performSelector:@selector(playerItemWithURL:) withObject:url];
                     id player = [PlayerClass performSelector:@selector(playerWithPlayerItem:) withObject:item];
-                    [player performSelector:@selector(setMuted:) withObject:@YES];
+                    [player setValue:@YES forKey:@"muted"];
 
                     // 循环
                     NSMutableData *cmtime = [NSMutableData dataWithLength:24];
@@ -7856,48 +8046,25 @@ void cyanide_present_contact(UIViewController *host)
                         [inv invoke];
                     }];
 
-                    // Player layer — 用一个 container view 包裹，方便自动布局
-                    UIView *videoContainer = [[UIView alloc] init];
-                    videoContainer.clipsToBounds = YES;
-                    videoContainer.translatesAutoresizingMaskIntoConstraints = NO;
-                    [cell.contentView addSubview:videoContainer];
-                    [NSLayoutConstraint activateConstraints:@[
-                        [videoContainer.leadingAnchor  constraintEqualToAnchor:cell.contentView.leadingAnchor],
-                        [videoContainer.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor],
-                        [videoContainer.topAnchor      constraintEqualToAnchor:cell.contentView.topAnchor],
-                        [videoContainer.bottomAnchor   constraintEqualToAnchor:cell.contentView.bottomAnchor],
-                    ]];
-
                     id layer = [PlayerLayerClass performSelector:@selector(playerLayerWithPlayer:) withObject:player];
                     [layer setValue:@"AVLayerVideoGravityResizeAspectFill" forKey:@"videoGravity"];
-                    [videoContainer.layer addSublayer:layer];
+                    [phoneFrame.layer addSublayer:layer];
                     // 布局后更新 layer frame
                     dispatch_async(dispatch_get_main_queue(), ^{
-                        [layer setFrame:videoContainer.bounds];
+                        [layer setFrame:phoneFrame.bounds];
                     });
 
-                    // 不自动播放，显示播放按钮（叠在视频上方）
-                    UIButton *playBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-                    [playBtn setImage:[UIImage systemImageNamed:@"play.fill"] forState:UIControlStateNormal];
-                    playBtn.tintColor = UIColor.whiteColor;
-                    playBtn.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.5];
-                    playBtn.layer.cornerRadius = 28;
-                    playBtn.translatesAutoresizingMaskIntoConstraints = NO;
-                    [cell.contentView addSubview:playBtn];
-
-                    [NSLayoutConstraint activateConstraints:@[
-                        [playBtn.centerXAnchor constraintEqualToAnchor:cell.contentView.centerXAnchor],
-                        [playBtn.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
-                        [playBtn.widthAnchor constraintEqualToConstant:56],
-                        [playBtn.heightAnchor constraintEqualToConstant:56],
-                    ]];
-
-                    // 按钮 action
                     objc_setAssociatedObject(playBtn, "livewp_btn_player", player, OBJC_ASSOCIATION_ASSIGN);
                     objc_setAssociatedObject(playBtn, "livewp_btn_layer", layer, OBJC_ASSOCIATION_ASSIGN);
                     [playBtn addTarget:self action:@selector(livewpPreviewToggle:) forControlEvents:UIControlEventTouchUpInside];
 
+                    objc_setAssociatedObject(replayBtn, "livewp_btn_player", player, OBJC_ASSOCIATION_ASSIGN);
+                    objc_setAssociatedObject(replayBtn, "livewp_btn_item", item, OBJC_ASSOCIATION_ASSIGN);
+                    objc_setAssociatedObject(replayBtn, "livewp_btn_play", playBtn, OBJC_ASSOCIATION_ASSIGN);
+                    [replayBtn addTarget:self action:@selector(livewpPreviewReplay:) forControlEvents:UIControlEventTouchUpInside];
+
                     objc_setAssociatedObject(cell, "livewp_preview_player", player, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    objc_setAssociatedObject(cell, "livewp_preview_item", item, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                     objc_setAssociatedObject(cell, "livewp_preview_btn", playBtn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 }
             } @catch (NSException *e) {
