@@ -1472,18 +1472,8 @@ void settings_best_effort_termination_cleanup(const char *reason)
     }
 
     settings_request_all_live_loops_stop("termination cleanup");
-
-    BOOL locked = settings_acquire_actions_lock_wait("termination cleanup", 1500000);
-    if (!locked) {
-        log_user("[CLEANUP] Last-chance cleanup skipped because another operation is still active.\n");
-        return;
-    }
-
-    @try {
-        settings_terminal_kexploit_cleanup_sync_internal(why);
-    } @finally {
-        __sync_lock_release(&g_settings_actions_running);
-    }
+    log_user("[CLEANUP] App termination: skipped heavy KRW teardown; live loops were only asked to stop.\n");
+    printf("[SETTINGS] termination cleanup limited to stop requests only: %s\n", why);
 }
 
 void settings_destroy_springboard_remote_call_sync(void)
@@ -2757,14 +2747,14 @@ static void settings_start_nsbar_live_loop(void)
 static void settings_apply_nsbar_once_async(const char *reason)
 {
     if (!settings_device_supported()) return;
-    if (settings_cleanup_in_progress()) return;
+    if (settings_cleanup_in_progress() || g_settings_termination_cleanup_started) return;
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     if (![d boolForKey:kSettingsNSBarEnabled] || !g_springboard_rc_ready) return;
     if (g_nsbar_live_running) return;
 
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
-        if (settings_cleanup_in_progress()) return;
+        if (settings_cleanup_in_progress() || g_settings_termination_cleanup_started) return;
         bool ok = false;
         (void)settings_refresh_screen_awake_state(reason ?: "nsbar apply");
         if (!settings_screen_awake_cached()) {
@@ -2775,6 +2765,7 @@ static void settings_apply_nsbar_once_async(const char *reason)
         }
         @synchronized (settings_rc_lock()) {
             if (settings_cleanup_in_progress() ||
+                g_settings_termination_cleanup_started ||
                 ![d boolForKey:kSettingsNSBarEnabled] ||
                 !g_springboard_rc_ready) return;
             NSBarPosition position = (NSBarPosition)[d integerForKey:kSettingsNSBarPosition];
@@ -2996,13 +2987,14 @@ static void settings_apply_nicebarlite_once_async(const char *reason)
 {
     if (!settings_device_supported()) return;
     if (settings_cleanup_in_progress()) return;
+    if (g_settings_termination_cleanup_started) return;
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     if (![d boolForKey:kSettingsNiceBarLiteEnabled] || !g_springboard_rc_ready) return;
     if (g_nicebarlite_live_running) return;
 
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
-        if (settings_cleanup_in_progress()) return;
+        if (settings_cleanup_in_progress() || g_settings_termination_cleanup_started) return;
         bool ok = false;
         uint64_t beginUS = settings_now_us();
         log_user("[NICEBAR] Lifecycle apply requested%s%s.\n",
@@ -3021,6 +3013,7 @@ static void settings_apply_nicebarlite_once_async(const char *reason)
         uint64_t applyStartUS = settings_now_us();
         @synchronized (settings_rc_lock()) {
             if (settings_cleanup_in_progress() ||
+                g_settings_termination_cleanup_started ||
                 ![d boolForKey:kSettingsNiceBarLiteEnabled] ||
                 !g_springboard_rc_ready) return;
             ok = settings_apply_nicebarlite_from_defaults_locked(d);
@@ -3801,7 +3794,7 @@ static void settings_apply_axonlite_once_async(const char *reason)
 void settings_application_did_enter_background(void)
 {
     if (__sync_lock_test_and_set(&g_app_in_background, 1)) return;
-    if (settings_cleanup_in_progress()) return;
+    if (settings_cleanup_in_progress() || g_settings_termination_cleanup_started) return;
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     BOOL anyLiveLoopNeeded =
@@ -3844,7 +3837,7 @@ void settings_application_will_enter_foreground(void)
     if (!settings_app_state_is_foreground()) return;
     g_app_in_background = 0;
     settings_end_statbar_background_task_async("foreground");
-    if (settings_cleanup_in_progress()) return;
+    if (settings_cleanup_in_progress() || g_settings_termination_cleanup_started) return;
     settings_apply_statbar_once_async("will enter foreground");
     settings_apply_nsbar_once_async("will enter foreground");
     settings_apply_nicebarlite_once_async("will enter foreground");
@@ -3860,7 +3853,7 @@ void settings_application_did_become_active(void)
 {
     if (!settings_app_state_is_foreground()) return;
     g_app_in_background = 0;
-    if (settings_cleanup_in_progress()) return;
+    if (settings_cleanup_in_progress() || g_settings_termination_cleanup_started) return;
     settings_apply_statbar_once_async("became active");
     settings_apply_nsbar_once_async("became active");
     settings_apply_nicebarlite_once_async("became active");
@@ -4085,10 +4078,16 @@ static void settings_schedule_live_apply_for_key(NSString *key)
     }
 
     if (settings_key_is_nsbar(key)) {
+        if (g_settings_termination_cleanup_started) {
+            printf("[SETTINGS] live NSBar apply skipped during termination for %s\n", key.UTF8String);
+            return;
+        }
         if ([d boolForKey:kSettingsNSBarEnabled] && g_springboard_rc_ready) {
             dispatch_async(dispatch_get_global_queue(0, 0), ^{
                 @synchronized (settings_rc_lock()) {
-                    if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
+                    if (settings_cleanup_in_progress() ||
+                        g_settings_termination_cleanup_started ||
+                        !g_springboard_rc_ready) return;
                     NSBarPosition position = (NSBarPosition)[d integerForKey:kSettingsNSBarPosition];
                     bool ok = nsbar_apply_in_session(position);
                     settings_mark_tweak_applied(kSettingsNSBarEnabled,
@@ -4160,6 +4159,10 @@ static void settings_schedule_live_apply_for_key(NSString *key)
     }
 
     if (settings_key_is_nicebarlite(key)) {
+        if (g_settings_termination_cleanup_started) {
+            printf("[SETTINGS] live NiceBar Lite apply skipped during termination for %s\n", key.UTF8String);
+            return;
+        }
         BOOL forceWeatherRefresh = [key isEqualToString:kSettingsNiceBarLiteCelsius];
         if (forceWeatherRefresh || [key hasPrefix:kSettingsNiceBarLiteSlotKindPrefix]) {
             settings_nicebar_refresh_weather_if_needed(forceWeatherRefresh, nil);
@@ -4170,7 +4173,9 @@ static void settings_schedule_live_apply_for_key(NSString *key)
                 uint64_t beginUS = settings_now_us();
                 bool ok = false;
                 @synchronized (settings_rc_lock()) {
-                    if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
+                    if (settings_cleanup_in_progress() ||
+                        g_settings_termination_cleanup_started ||
+                        !g_springboard_rc_ready) return;
                     uint64_t applyStartUS = settings_now_us();
                     ok = (updateMask == 0)
                         ? settings_apply_nicebarlite_from_defaults_locked(d)
