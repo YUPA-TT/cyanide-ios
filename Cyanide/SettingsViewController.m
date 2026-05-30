@@ -5854,6 +5854,91 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     return cell;
 }
 
+- (NSString *)nsbarPositionTitle:(NSBarPosition)position
+{
+    switch (position) {
+        case NSBarPositionTopLeft: return @"Top left";
+        case NSBarPositionTopRight: return @"Top right";
+        case NSBarPositionBottomLeft: return @"Bottom left";
+        case NSBarPositionBottomRight: return @"Bottom right";
+        case NSBarPositionCenter: return @"Center";
+        default: return @"Top left";
+    }
+}
+
+- (UIButton *)nsbarPositionButton:(NSBarPosition)position selected:(BOOL)selected
+{
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.tag = (NSInteger)position;
+    button.layer.cornerRadius = 8.0;
+    button.layer.borderWidth = 1.0;
+    button.layer.borderColor = (selected ? UIColor.systemGreenColor : UIColor.separatorColor).CGColor;
+    button.backgroundColor = selected
+        ? [UIColor.systemGreenColor colorWithAlphaComponent:0.18]
+        : UIColor.secondarySystemGroupedBackgroundColor;
+    [button setTitle:[self nsbarPositionTitle:position] forState:UIControlStateNormal];
+    [button setTitleColor:selected ? UIColor.systemGreenColor : UIColor.labelColor forState:UIControlStateNormal];
+    button.titleLabel.font = [UIFont systemFontOfSize:13.0 weight:selected ? UIFontWeightSemibold : UIFontWeightRegular];
+    button.titleLabel.numberOfLines = 1;
+    button.titleLabel.adjustsFontSizeToFitWidth = YES;
+    button.titleLabel.minimumScaleFactor = 0.75;
+    [button addTarget:self action:@selector(nsbarPositionButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
+    return button;
+}
+
+- (UITableViewCell *)buildNSBarGridCellInTableView:(UITableView *)tableView
+                                        indexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"nsbar-grid"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"nsbar-grid"];
+    }
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.accessoryView = nil;
+    cell.textLabel.text = nil;
+    cell.contentConfiguration = nil;
+    for (UIView *v in [cell.contentView.subviews copy]) [v removeFromSuperview];
+
+    NSInteger selected = [[NSUserDefaults standardUserDefaults] integerForKey:kSettingsNSBarPosition];
+    if (selected < NSBarPositionTopLeft || selected > NSBarPositionCenter) selected = NSBarPositionTopLeft;
+
+    UIStackView *top = [[UIStackView alloc] initWithArrangedSubviews:@[
+        [self nsbarPositionButton:NSBarPositionTopLeft selected:selected == NSBarPositionTopLeft],
+        [self nsbarPositionButton:NSBarPositionTopRight selected:selected == NSBarPositionTopRight],
+    ]];
+    top.axis = UILayoutConstraintAxisHorizontal;
+    top.spacing = 10.0;
+    top.distribution = UIStackViewDistributionFillEqually;
+
+    UIStackView *bottom = [[UIStackView alloc] initWithArrangedSubviews:@[
+        [self nsbarPositionButton:NSBarPositionBottomLeft selected:selected == NSBarPositionBottomLeft],
+        [self nsbarPositionButton:NSBarPositionCenter selected:selected == NSBarPositionCenter],
+        [self nsbarPositionButton:NSBarPositionBottomRight selected:selected == NSBarPositionBottomRight],
+    ]];
+    bottom.axis = UILayoutConstraintAxisHorizontal;
+    bottom.spacing = 10.0;
+    bottom.distribution = UIStackViewDistributionFillEqually;
+
+    UIStackView *grid = [[UIStackView alloc] initWithArrangedSubviews:@[top, bottom]];
+    grid.translatesAutoresizingMaskIntoConstraints = NO;
+    grid.axis = UILayoutConstraintAxisVertical;
+    grid.spacing = 10.0;
+    grid.distribution = UIStackViewDistributionFillEqually;
+    [cell.contentView addSubview:grid];
+
+    UILayoutGuide *m = cell.contentView.layoutMarginsGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [grid.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
+        [grid.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+        [grid.topAnchor constraintEqualToAnchor:m.topAnchor constant:6.0],
+        [grid.bottomAnchor constraintEqualToAnchor:m.bottomAnchor constant:-6.0],
+        [grid.heightAnchor constraintEqualToConstant:108.0],
+    ]];
+    (void)indexPath;
+    return cell;
+}
+
 #pragma mark - Row models
 
 - (NSArray<NSDictionary *> *)launchRows
@@ -5990,7 +6075,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
 - (NSArray<NSDictionary *> *)nsbarRows
 {
     return @[
-        @{ @"kind": @"segmented", @"key": kSettingsNSBarPosition, @"title": @"Position" },
+        @{ @"kind": @"nsbar-grid" },
     ];
 }
 
@@ -6107,6 +6192,11 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         [out addObject:@{@"title": @"Show CPU %",          @"value": [d boolForKey:kSettingsStatBarShowCPU]    ? @"On" : @"Off"}];
         [out addObject:@{@"title": @"Show CPU/RAM labels", @"value": [d boolForKey:kSettingsStatBarShowLabels] ? @"On" : @"Off"}];
         [out addObject:@{@"title": @"Show net speed",      @"value": [d boolForKey:kSettingsStatBarShowNet]    ? @"On" : @"Off"}];
+    } else if (section == SectionNSBar) {
+        NSArray<NSString *> *positions = nsbar_positions();
+        NSInteger pos = [d integerForKey:kSettingsNSBarPosition];
+        NSString *value = (pos >= 0 && pos < (NSInteger)positions.count) ? positions[(NSUInteger)pos] : positions.firstObject;
+        [out addObject:@{@"title": @"Position", @"value": value ?: @"Top Left"}];
     } else if (section == SectionNiceBarLite) {
         for (NSInteger i = 0; i < NiceBarLiteSlotCount; i++) {
             NSInteger kind = [d integerForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotKindPrefix, i)];
@@ -6319,6 +6409,9 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     }
     if (s == SectionStatBar) {
         return @"Live overlay. When enabled, StatBar keeps a SpringBoard RemoteCall session open and refreshes once per second until toggled off.";
+    }
+    if (s == SectionNSBar) {
+        return @"Tap a position box to move the network speed pill. Position changes apply silently during the active SpringBoard session.";
     }
     if (s == SectionNiceBarLite) {
         return @"Tap a box to choose what it shows. NiceBar Lite places plain text in the configured status-bar slots around the notch or Dynamic Island, including the bottom center position. Weather is fetched from your current GPS location through Open-Meteo and follows the Celsius toggle.";
@@ -7541,6 +7634,10 @@ void cyanide_present_contact(UIViewController *host)
         return [self buildNiceBarGridCellInTableView:tableView indexPath:dequeuePath];
     }
 
+    if ([kind isEqualToString:@"nsbar-grid"]) {
+        return [self buildNSBarGridCellInTableView:tableView indexPath:dequeuePath];
+    }
+
     if ([kind isEqualToString:@"button"]) {
         BOOL rowSupported = supported ||
                             indexPath.section == SectionOTA ||
@@ -7957,7 +8054,21 @@ void cyanide_present_contact(UIViewController *host)
     if (sender.selectedSegmentIndex < 0 || sender.selectedSegmentIndex >= 5) return;
     [[NSUserDefaults standardUserDefaults] setInteger:sender.selectedSegmentIndex
                                                forKey:kSettingsNSBarPosition];
+    [[NSUserDefaults standardUserDefaults] synchronize];
     printf("[SETTINGS] NSBar position changed to: %ld\n", (long)sender.selectedSegmentIndex);
+    settings_schedule_live_apply_for_key(kSettingsNSBarPosition);
+}
+
+- (void)nsbarPositionButtonTapped:(UIButton *)sender
+{
+    NSInteger position = sender.tag;
+    if (position < NSBarPositionTopLeft || position > NSBarPositionCenter) return;
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    [d setInteger:position forKey:kSettingsNSBarPosition];
+    [d synchronize];
+    printf("[SETTINGS] NSBar position box changed to: %ld\n", (long)position);
+    settings_schedule_live_apply_for_key(kSettingsNSBarPosition);
+    [self.tableView reloadData];
 }
 
 - (void)presentNiceBarTextEditorForSlot:(NSInteger)slot action:(NSString *)action

@@ -10,6 +10,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <ifaddrs.h>
+#import <math.h>
 #import <net/if.h>
 #import <net/if_dl.h>
 #import <time.h>
@@ -23,6 +24,8 @@ static const double kNSBarWinLevel = 999999.0;
 static const double kNSBarMargin = 20.0;
 static const double kNSBarTopY = 0.0;      // 顶部留 1px 间距
 static const double kNSBarBottomY = 38.0;  // 更靠下（从 28.0 改为 44.0）
+static const double kNSBarTextHPad = 7.0;
+static const double kNSBarMinWidth = 54.0;
 
 // Global state
 static uint64_t gNSBarApplyTick = 0;
@@ -150,11 +153,8 @@ static bool nsbar_set_text_fast(uint64_t label, uint64_t textObj)
 {
     if (!r_is_objc_ptr(label) || !r_is_objc_ptr(textObj)) return false;
     if (!gNSBarSetTextSel) gNSBarSetTextSel = r_sel("setText:");
-    if (!gNSBarPerformMainSel) {
-        gNSBarPerformMainSel = r_sel("performSelectorOnMainThread:withObject:waitUntilDone:");
-    }
-    if (!gNSBarSetTextSel || !gNSBarPerformMainSel) return false;
-    r_msg(label, gNSBarPerformMainSel, gNSBarSetTextSel, textObj, 1, 0);
+    if (!gNSBarSetTextSel) return false;
+    r_msg2_main(label, "setText:", textObj, 0, 0, 0);
     return true;
 }
 
@@ -172,7 +172,6 @@ static bool r_send_double_main(uint64_t obj, const char *selName, double value)
                     NULL, 0,
                     NULL, 0,
                     NULL, 0);
-    usleep(20000);
     return true;
 }
 
@@ -186,7 +185,6 @@ static bool r_send_rect_main(uint64_t obj, const char *selName,
                     NULL, 0,
                     NULL, 0,
                     NULL, 0);
-    usleep(20000);
     return true;
 }
 
@@ -226,6 +224,34 @@ static void nsbar_apply_overlay_style(uint64_t label)
         r_send_double_main(layer, "setCornerRadius:", radius);
         r_msg2_main(layer, "setMasksToBounds:", 1, 0, 0, 0);
     }
+}
+
+static double nsbar_measure_text_width(NSString *text)
+{
+    if (text.length == 0) return kNSBarMinWidth;
+    UIFont *font = nil;
+    if (@available(iOS 9.0, *)) {
+        font = [UIFont monospacedDigitSystemFontOfSize:kNSBarFontPt weight:UIFontWeightRegular];
+    }
+    if (!font) font = [UIFont systemFontOfSize:kNSBarFontPt];
+    NSDictionary *attrs = @{ NSFontAttributeName: font };
+    return ceil([text sizeWithAttributes:attrs].width);
+}
+
+static double nsbar_width_for_text(NSString *text, NSBarPosition position)
+{
+    CGRect bounds = UIScreen.mainScreen.bounds;
+    double screenWidth = bounds.size.width;
+    if (!isfinite(screenWidth) || screenWidth < 100.0) screenWidth = 390.0;
+    double maxWidth = (position == NSBarPositionCenter)
+        ? screenWidth * 0.40
+        : (screenWidth * 0.5) - kNSBarMargin - 4.0;
+    if (maxWidth < kNSBarMinWidth) maxWidth = kNSBarMinWidth;
+
+    double width = nsbar_measure_text_width(text) + (kNSBarTextHPad * 2.0);
+    if (width < kNSBarMinWidth) width = kNSBarMinWidth;
+    if (width > maxWidth) width = maxWidth;
+    return width;
 }
 
 static void nsbar_calculate_position(NSBarPosition position, double *outX, double *outY, double width)
@@ -271,12 +297,11 @@ static void nsbar_calculate_position(NSBarPosition position, double *outX, doubl
     *outY = y;
 }
 
-static bool nsbar_apply_overlay_layout(uint64_t win, uint64_t label, NSBarPosition position)
+static bool nsbar_apply_overlay_layout(uint64_t win, uint64_t label, NSBarPosition position, NSString *text)
 {
     if (!r_is_objc_ptr(win)) return false;
 
-    // Fixed width for network speed display (reduced to half)
-    double width = 96;
+    double width = nsbar_width_for_text(text, position);
     double x = 0.0;
     double y = 0.0;
     
@@ -294,7 +319,6 @@ static bool nsbar_apply_overlay_layout(uint64_t win, uint64_t label, NSBarPositi
 
     if (r_is_objc_ptr(label)) {
         ok &= r_send_rect_main(label, "setFrame:", 0.0, 0.0, width, kNSBarWinH);
-        nsbar_apply_overlay_style(label);
     }
     
     return ok;
@@ -319,12 +343,8 @@ static bool nsbar_install_overlay(NSString *text, NSBarPosition position)
         bool ok = nsbar_set_text_fast(gNSBarOverlayLabel, textObj);
         nsbar_release_remote_obj(textObj);
         if (ok) {
-            // Update layout if position changed
-            if (gNSBarLastPosition != position) {
-                printf("[NSBAR] position changed, updating layout from %d to %d\n", gNSBarLastPosition, position);
-                nsbar_apply_overlay_layout(gNSBarOverlayWindow, gNSBarOverlayLabel, position);
-                gNSBarLastPosition = position;
-            }
+            nsbar_apply_overlay_layout(gNSBarOverlayWindow, gNSBarOverlayLabel, position, text);
+            gNSBarLastPosition = position;
             if (nsbar_should_log_tick())
                 printf("[NSBAR] overlay: fast cached text updated\n");
             return true;
@@ -368,7 +388,8 @@ static bool nsbar_install_overlay(NSString *text, NSBarPosition position)
             gNSBarOverlayLabel = cachedLabel;
             gNSBarLastPosition = position;
             nsbar_set_text_fast(cachedLabel, textObj);
-            nsbar_apply_overlay_layout(cachedWin, cachedLabel, position);
+            nsbar_apply_overlay_style(cachedLabel);
+            nsbar_apply_overlay_layout(cachedWin, cachedLabel, position, text);
             r_msg2_main(cachedWin, "setHidden:", 0, 0, 0, 0);
             nsbar_release_remote_obj(textObj);
             if (nsbar_should_log_tick())
@@ -450,6 +471,8 @@ static bool nsbar_install_overlay(NSString *text, NSBarPosition position)
     r_msg2_main(label, "setTag:", kNSBarOverlayTag, 0, 0, 0);
     r_msg2_main(label, "setTextAlignment:", 1, 0, 0, 0);
     r_msg2_main(label, "setNumberOfLines:", 1, 0, 0, 0);
+    r_msg2_main(label, "setAdjustsFontSizeToFitWidth:", 1, 0, 0, 0);
+    r_msg2_main(label, "setLineBreakMode:", 2, 0, 0, 0);
 
     if (r_is_objc_ptr(UIColor)) {
         uint64_t black = r_msg2_main(UIColor, "blackColor", 0, 0, 0, 0);
@@ -458,7 +481,8 @@ static bool nsbar_install_overlay(NSString *text, NSBarPosition position)
         if (r_is_objc_ptr(white)) r_msg2_main(label, "setTextColor:", white, 0, 0, 0);
     }
 
-    nsbar_apply_overlay_layout(win, label, position);
+    nsbar_apply_overlay_style(label);
+    nsbar_apply_overlay_layout(win, label, position, text);
     r_msg2_main(win, "addSubview:", label, 0, 0, 0);
     r_msg2_main(win, "setHidden:", 0, 0, 0, 0);
     r_dlsym_call(R_TIMEOUT, "objc_setAssociatedObject", app, assocKey, win, 1, 0, 0, 0, 0);
