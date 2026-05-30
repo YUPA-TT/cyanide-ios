@@ -332,7 +332,7 @@ static const useconds_t kNiceBarLiteLiveBackgroundIntervalUS = 1000000;
 static const NSUInteger kNiceBarLiteLiveMaxTicks = 43200;
 static const NSTimeInterval kNiceBarLiteWeatherRefreshInterval = 900.0;
 static const int64_t kLiveBackgroundTaskGraceSeconds = 10;
-static const useconds_t kRSSILiveIntervalUS = 1000000;
+static const useconds_t kRSSILiveIntervalUS = 250000;
 static const useconds_t kRSSILiveBackgroundIntervalUS = 1000000;
 static const NSUInteger kRSSILiveMaxTicks = 43200;
 static const useconds_t kAxonLiteLiveIntervalUS = 500000;
@@ -6460,7 +6460,8 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         return @"Partial TypeMillennium port. Detection runs against imagent using original-thread RemoteCall probes, while SpringBoard renders a prewarmed banner window.";
     }
     if (s == SectionThemer) {
-        return @"Pick a theme before running Cyanide Themer.\n\n"
+        return @"Note: Cyanide Themer is still rough around the edges and may be glitchy. It will be iteratively improved to be more stable over time.\n\n"
+               @"Pick a theme before running Cyanide Themer.\n\n"
                @"Custom themes can be a folder of PNG files named by bundle ID, such as com.apple.mobilesafari.png, or a binary plist mapping bundle IDs to PNG data. Import copies the theme into Cyanide's Documents/Themes folder. Theme Format Guide includes examples and plist exports.";
     }
     if (s == SectionLiveWP) {
@@ -6710,12 +6711,20 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
 
 - (void)presentThemerImporter
 {
-    UIDocumentPickerViewController *picker =
-        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder, UTTypePropertyList]
-                                                                    asCopy:YES];
-    picker.delegate = self;
-    picker.allowsMultipleSelection = NO;
-    [self presentViewController:picker animated:YES completion:nil];
+    UIAlertController *hint = [UIAlertController
+        alertControllerWithTitle:@"Import Theme Folder"
+                         message:@"Navigate into your theme folder so you can see the PNG files inside, then tap Open in the top-right corner to import the folder."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [hint addAction:[UIAlertAction actionWithTitle:@"Continue" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        (void)a;
+        UIDocumentPickerViewController *picker =
+            [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder, UTTypePropertyList]];
+        picker.delegate = self;
+        picker.allowsMultipleSelection = NO;
+        [self presentViewController:picker animated:YES completion:nil];
+    }]];
+    [hint addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:hint animated:YES completion:nil];
 }
 
 - (void)livewpPreviewToggle:(UIButton *)btn
@@ -6965,22 +6974,33 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
         return;
     }
     
-    // Handle Themer import (existing logic)
-    BOOL ok = isDir ? [self importThemerFolderAtURL:url error:&err]
-                    : [self importThemerPlistAtURL:url error:&err];
-    if (scoped) [url stopAccessingSecurityScopedResource];
+    // Handle Themer import.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSError *themeErr = nil;
+        BOOL ok = isDir ? [self importThemerFolderAtURL:url error:&themeErr]
+                        : [self importThemerPlistAtURL:url error:&themeErr];
+        if (scoped) [url stopAccessingSecurityScopedResource];
 
-    if (!ok) {
-        NSString *msg = err.localizedDescription ?: @"Choose a folder of bundleID.png files or a binary plist mapping bundle IDs to PNG data.";
-        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Theme Import Failed"
-                                                                     message:msg
-                                                              preferredStyle:UIAlertControllerStyleAlert];
-        [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-        [self presentViewController:ac animated:YES completion:nil];
-        return;
-    }
-
-    [self reloadThemerSectionAndQueue];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!ok) {
+                NSString *msg = themeErr.localizedDescription ?: @"Choose a folder of bundleID.png files or a binary plist mapping bundle IDs to PNG data.";
+                UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Theme Import Failed"
+                                                                             message:msg
+                                                                      preferredStyle:UIAlertControllerStyleAlert];
+                [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:ac animated:YES completion:nil];
+                return;
+            }
+            [self reloadThemerSectionAndQueue];
+            NSString *name = settings_themer_selected_theme_display_name();
+            UIAlertController *ac = [UIAlertController
+                alertControllerWithTitle:@"Theme Imported"
+                                 message:[NSString stringWithFormat:@"\"%@\" is now selected. Toggle Cyanide Themer on and tap Run to apply.", name]
+                          preferredStyle:UIAlertControllerStyleAlert];
+            [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:ac animated:YES completion:nil];
+        });
+    });
 }
 
 // "Classic" alternate icon is registered in Info.plist with CFBundleIconFiles
