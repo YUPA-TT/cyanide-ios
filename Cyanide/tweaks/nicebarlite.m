@@ -44,7 +44,8 @@ static const double kNBLFallbackScreenWidth = 390.0;
 static const double kNBLWinH = 18.0;
 static const double kNBLFontPt = 11.0;
 static const double kNBLTopFontPt = 8.8;
-static const double kNBLWindowLevel = 999999.0;
+// Was 999999.0; keep it near status bar level so system overlays can cover it.
+static const double kNBLWindowLevel = 1001.0;
 static const double kNBLSideMargin = 20.0;
 static const double kNBLTopSideMargin = 29.0;
 static const double kNBLTopY = 0.0;

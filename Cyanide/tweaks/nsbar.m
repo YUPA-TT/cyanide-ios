@@ -20,7 +20,8 @@
 static const uint64_t kNSBarOverlayTag = 99422;
 static const double kNSBarWinH = 18.0;
 static const double kNSBarFontPt = 11.5;
-static const double kNSBarWinLevel = 999999.0;
+// Was 999999.0; keep it near status bar level so system overlays can cover it.
+static const double kNSBarWinLevel = 1001.0;
 static const double kNSBarMargin = 20.0;
 static const double kNSBarTopY = 0.0;      // 顶部留 1px 间距
 static const double kNSBarBottomY = 38.0;  // 更靠下（从 28.0 改为 44.0）
